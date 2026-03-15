@@ -60,6 +60,15 @@ const config: HardhatUserConfig = {
       accounts: VALID_PRIVATE_KEY ? [VALID_PRIVATE_KEY] : [],
       gasPrice: 3_000_000_000,
     },
+    anvil: {
+      url: process.env.ANVIL_RPC_URL || "http://127.0.0.1:8545",
+      chainId: 56,
+      // Anvil default account #0 (test only — never use on mainnet)
+      accounts: VALID_PRIVATE_KEY
+        ? [VALID_PRIVATE_KEY]
+        : ["0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"],
+      gasPrice: 3_000_000_000,
+    },
   },
 
   gasReporter: {

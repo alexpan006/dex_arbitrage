@@ -11,6 +11,9 @@
     "deploy:bsc": "hardhat run scripts/deploy.ts --network bsc",
     "start": "ts-node src/index.ts",
     "start:monitor": "ts-node scripts/monitor.ts",
+    "fork:start": "bash scripts/anvil-fork.sh",
+    "fork:deploy": "hardhat run scripts/deploy-fork.ts --network anvil",
+    "fork:bot": "ts-node scripts/run-fork-bot.ts",
     "clean": "hardhat clean && rm -rf dist"
   },
   "dependencies": {
