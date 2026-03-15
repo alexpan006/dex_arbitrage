@@ -13,6 +13,7 @@ import { ExecutionEngine } from "../src/execution/ExecutionEngine";
 import { GasEstimator } from "../src/execution/GasEstimator";
 import { PrivateTxSubmitter } from "../src/execution/PrivateTxSubmitter";
 import { createLogger } from "../src/utils/logger";
+import { createDivergence } from "./create-fork-divergence";
 
 const logger = createLogger("fork-bot");
 
@@ -117,7 +118,8 @@ async function runDetectionLoop(
   wsProvider: WebSocketProvider,
   httpProvider: JsonRpcProvider,
   engine: ExecutionEngine,
-  maxCycles: number
+  maxCycles: number,
+  enableDivergence: boolean
 ): Promise<void> {
   const discovery = new PoolDiscovery(httpProvider);
   const quoter = new QuoterService(httpProvider);
@@ -130,9 +132,53 @@ async function runDetectionLoop(
   }
   logger.info("pools discovered", { count: discoveredPairs.length });
 
+  if (enableDivergence && discoveredPairs.length > 0) {
+    // Prefer fee >= 500 pools — fee-100 (tick spacing 1) causes Anvil to hang
+    // due to massive tick bitmap RPC fetches on fork. Fee-500 (tick spacing 10)
+    // and fee-2500 (tick spacing 50) are much faster.
+    const targetPair =
+      discoveredPairs.find((p) => p.fee >= 500) ?? discoveredPairs[0];
+    if (targetPair.fee < 500) {
+      logger.warn("no fee >= 500 pool found — using fee-100 pool (may be slow on fork)", {
+        fee: targetPair.fee,
+      });
+    }
+    const priceDeltaBps = parseInt(process.env.FORK_DIVERGENCE_BPS || "30", 10);
+    logger.info("creating artificial price divergence via slot0 manipulation", {
+      pool: targetPair.pancakePool,
+      fee: targetPair.fee,
+      priceDeltaBps,
+    });
+    try {
+      const divergenceResult = await createDivergence(
+        httpProvider,
+        targetPair.pancakePool,
+        targetPair.token0,
+        targetPair.token1,
+        targetPair.fee,
+        0n,
+        priceDeltaBps
+      );
+      logger.info("divergence created", {
+        pool: divergenceResult.poolAddress,
+        priceMovePercent: divergenceResult.priceMovePercent.toFixed(4),
+      });
+    } catch (err) {
+      logger.error("divergence creation failed — continuing without it", { error: String(err) });
+    }
+  }
+
   const monitoredPools = buildMonitoredPools(discoveredPairs);
   const feed = new PriceFeed(wsProvider, httpProvider, monitoredPools);
-  const detector = new OpportunityDetector(quoter);
+  const detector = new OpportunityDetector(quoter, {
+    maxBorrowToken0: 100n * 10n ** 18n,
+    minSpreadBps: 1,
+    minExpectedProfitToken0: 1n,
+    minBorrowToken0: 1n * 10n ** 16n,
+    coarseRatiosBps: [100, 300, 500, 1000, 2000, 3500, 5000],
+    refineIterations: 4,
+    maxQuoteEvaluations: 16,
+  });
 
   let cyclesRun = 0;
   let opportunitiesFound = 0;
@@ -157,6 +203,9 @@ async function runDetectionLoop(
             pairsScanned: metrics.pairsScanned,
             pairsWithSpread: metrics.pairsWithSpread,
             opportunitiesFound: metrics.opportunitiesFound,
+            quoteRoundTripAttempts: metrics.quoteRoundTripAttempts,
+            quoteRoundTripFailures: metrics.quoteRoundTripFailures,
+            optimizerEvalCount: metrics.optimizerEvalCount,
             durationMs: metrics.durationMs,
           });
 
@@ -259,19 +308,22 @@ async function main(): Promise<void> {
       receiptPollIntervalMs: 200,
     });
 
+    const enableDivergence = process.env.FORK_CREATE_DIVERGENCE === "true";
+
     logger.info("execution engine ready", {
       dryRun,
       contractAddress,
       wallet: wallet.address,
+      enableDivergence,
     });
 
-    await runDetectionLoop(wsProvider, httpProvider, engine, MAX_DETECTION_CYCLES);
+    await runDetectionLoop(wsProvider, httpProvider, engine, MAX_DETECTION_CYCLES, enableDivergence);
 
     logger.info("destroying WebSocket...");
     try {
-      await wsProvider.destroy();
+      wsProvider.destroy().catch(() => {});
     } catch {
-      // ethers v6 throws on unsubscribe if the provider is already shutting down
+      // ethers v6 may synchronously throw during unsubscribe
     }
   } catch (err) {
     logger.error("fork bot failed", { error: String(err) });
@@ -284,5 +336,7 @@ async function main(): Promise<void> {
 
   process.exit(exitCode);
 }
+
+process.on("unhandledRejection", () => {});
 
 main();

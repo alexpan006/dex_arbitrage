@@ -157,8 +157,8 @@ export class OpportunityDetector {
       }
       pairsWithSpread += 1;
 
-      const buyPool = uniPrice < pcsPrice ? uni : pcs;
-      const sellPool = uniPrice < pcsPrice ? pcs : uni;
+      const buyPool = uniPrice < pcsPrice ? pcs : uni;
+      const sellPool = uniPrice < pcsPrice ? uni : pcs;
 
       const bestResult = await this.findBestCandidate(buyPool, sellPool);
       optimizerRuns += 1;

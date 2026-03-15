@@ -97,6 +97,7 @@ export class ExecutionEngine {
     const txData = this.contract.interface.encodeFunctionData("executeArbitrage", [arbParams]);
 
     const txRequest: TransactionRequest = {
+      from: this.wallet.address,
       to: this.options.contractAddress,
       data: txData,
       chainId: CHAIN_ID,
@@ -241,8 +242,8 @@ export class ExecutionEngine {
     sqrtPriceLimitX96: bigint;
     amountOutMin: bigint;
   } {
-    // buyPool = pool where price is lower → we buy here → this is the borrow pool (flash swap)
-    // sellPool = pool where price is higher → we sell here → this is the arb pool
+    // buyPool = pool where price is higher → we buy token1 here (get more token1 per token0) → this is the borrow pool (flash swap)
+    // sellPool = pool where price is lower → we sell token1 here (get more token0 per token1) → this is the arb pool
     const poolBorrow = opportunity.buyPool.poolAddress;
     const poolArb = opportunity.sellPool.poolAddress;
     const borrowDex = DEX_TYPE[opportunity.borrowDex];
