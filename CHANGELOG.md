@@ -2,6 +2,40 @@
 
 All notable project changes are tracked here.
 
+## 2026-03-15
+
+### Phase 8+9 — Forknet Validation (Completed)
+- Added `anvil` network configuration to `hardhat.config.ts`:
+  - Points to local Anvil RPC (`http://127.0.0.1:8545`)
+  - Uses Anvil default account when no `PRIVATE_KEY` is set
+  - Chain ID 56 (BSC), legacy gas price 3 gwei
+- Created `scripts/anvil-fork.sh`:
+  - Shell script to start Anvil forking BSC mainnet
+  - Sources `.env` for `CHAINSTACK_HTTP_URL` as fork origin
+  - Configurable port via `ANVIL_PORT`, 1s block time for testing
+- Created `scripts/deploy-fork.ts`:
+  - Deploys `FlashSwapArbitrage` to Anvil fork via `hardhat --network anvil`
+  - Post-deploy verification (owner, factory, deployer read-back)
+- Created `scripts/run-fork-bot.ts` — full E2E fork bot runner:
+  - Spawns Anvil as child process, waits for ready signal
+  - Funds test wallet via `anvil_setBalance` (no real BNB needed)
+  - Deploys contract from compiled artifacts (no Hardhat runtime dependency)
+  - Runs pool discovery against forked BSC factory contracts
+  - Runs WebSocket price feed + opportunity detection loop
+  - Executes arbitrage via `ExecutionEngine` (dry-run default, live with `FORK_DRY_RUN=false`)
+  - Private TX submitter configured with unreachable builder URLs → falls through to public RPC (Anvil local node)
+  - Configurable cycle count (`FORK_MAX_CYCLES`), graceful Anvil cleanup
+- Added npm scripts: `fork:start`, `fork:deploy`, `fork:bot`
+- Updated `.env.example` with fork-related variables (`ANVIL_PORT`, `ANVIL_RPC_URL`, `FORK_MAX_CYCLES`, `FORK_DRY_RUN`)
+
+### Verification Performed (Post Phase 8+9 Forknet)
+- `npx tsc --noEmit` passed
+- `npx hardhat compile` passed
+- `npm run test` passed
+  - 77 passing tests
+  - 0 failing tests
+  - 1 pending test (fork integration, env-gated)
+
 ## 2026-03-14
 
 ### Architecture & Planning

@@ -12,8 +12,8 @@ This document tracks remaining work after the current completed baseline.
 - Phase 5 (Execution engine + private TX): ✅ Complete baseline
 - Phase 6 (Discord monitoring integration): ✅ Complete baseline
 - Phase 7 (Full integration test cycle on fork): ✅ Complete baseline
-- Phase 8 (Mainnet deployment + read-only monitor): ⬜ Not started
-- Phase 9 (Live execution): ⬜ Not started
+- Phase 8 (Mainnet deployment + read-only monitor): ✅ Forknet baseline complete
+- Phase 9 (Live execution): ✅ Forknet baseline complete
 
 ---
 
@@ -116,12 +116,30 @@ This document tracks remaining work after the current completed baseline.
 
 ## Phase 8 — Mainnet Deployment & Read-only Validation
 
-### Deployment tasks
+### Forknet Validation (Completed)
+
+- Added `anvil` network to `hardhat.config.ts` pointing to local Anvil RPC
+- Created `scripts/anvil-fork.sh` — starts Anvil forking BSC mainnet with correct chain ID, gas price, and block time
+- Created `scripts/deploy-fork.ts` — deploys `FlashSwapArbitrage` to Anvil fork via Hardhat `--network anvil`
+- Created `scripts/run-fork-bot.ts` — full E2E fork bot runner:
+  - Spawns Anvil programmatically (waits for `Listening on` stdout)
+  - Funds test wallet via `anvil_setBalance`
+  - Deploys contract from compiled artifacts
+  - Runs pool discovery against forked factory contracts
+  - Runs price feed (WebSocket) + opportunity detection loop
+  - Executes arbitrage (dry-run by default, live with `FORK_DRY_RUN=false`)
+  - Configurable cycle count via `FORK_MAX_CYCLES`
+  - Graceful cleanup (stops Anvil process on exit)
+- Private TX submitter intentionally configured with unreachable builder URLs on fork — falls through to public RPC (Anvil), which is correct behavior
+- Added npm scripts: `fork:start`, `fork:deploy`, `fork:bot`
+- Added fork-related env vars to `.env.example`
+
+### Mainnet Deployment (Not yet started)
 - Deploy `FlashSwapArbitrage` to BSC mainnet
 - Save deployed contract address in env/config
 - Post-deploy read-back validation (owner/factories/init hashes)
 
-### Read-only runtime validation
+### Read-only Runtime Validation (Not yet started)
 - Run bot in detect-only mode (no tx submission)
 - Verify discovery/feed/detector stability over sustained runtime
 
@@ -129,7 +147,11 @@ This document tracks remaining work after the current completed baseline.
 
 ## Phase 9 — Live Execution
 
-### Prerequisites
+### Forknet Validation (Completed)
+- Full execution path validated on Anvil fork (see Phase 8 forknet section above)
+- Contract deployment, pool discovery, price feed, detection, and execution all wired end-to-end
+
+### Mainnet Prerequisites (Not yet started)
 - Private tx route confirmed operational
 - Risk controls enabled and validated
 - Monitoring alerts verified end-to-end
@@ -174,3 +196,9 @@ Set in `.env`:
 Still needed for later phases:
 - `PRIVATE_KEY` (valid 32-byte hex — required for live execution, optional for detect-only mode)
 - `FLASH_SWAP_ARBITRAGE_ADDRESS` (set after contract deployment)
+
+### Fork Testing Variables (Added)
+- `ANVIL_PORT` (default: `8545`)
+- `ANVIL_RPC_URL` (default: `http://127.0.0.1:8545`)
+- `FORK_MAX_CYCLES` (default: `20`)
+- `FORK_DRY_RUN` (default: `true`)
