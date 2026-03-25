@@ -19,6 +19,7 @@ export interface MonitoredPool extends PoolStaticMeta {}
 
 export interface PriceFeedOptions {
   staleMs?: number;
+  fallbackPollBlocks?: number;
 }
 
 export class PriceFeed {
@@ -31,9 +32,11 @@ export class PriceFeed {
   private readonly poolsByAddress = new Map<string, MonitoredPool>();
   private readonly staleMs: number;
   private readonly listeners = new Set<(updated: PoolState[], blockNumber: number) => void>();
+  private readonly fallbackPollBlocks: number;
 
   private running = false;
   private blockHandler: ((blockNumber: number) => Promise<void>) | undefined;
+  private blocksSinceLastPoll = 0;
 
   constructor(
     wsProvider: WebSocketProvider,
@@ -46,6 +49,7 @@ export class PriceFeed {
     this.multicallWs = new Contract(MULTICALL3_ADDRESS, MULTICALL3_ABI, this.wsProvider);
     this.multicallFallback = new Contract(MULTICALL3_ADDRESS, MULTICALL3_ABI, this.fallbackProvider);
     this.staleMs = options.staleMs ?? BLOCK_TIME_MS * 3;
+    this.fallbackPollBlocks = options.fallbackPollBlocks ?? 1;
 
     for (const pool of pools) {
       this.poolsByAddress.set(pool.poolAddress.toLowerCase(), pool);
@@ -73,9 +77,14 @@ export class PriceFeed {
     }
 
     this.running = true;
+    this.blocksSinceLastPoll = 0;
     this.blockHandler = async (blockNumber: number): Promise<void> => {
       try {
-        await this.refresh(blockNumber);
+        this.blocksSinceLastPoll++;
+        if (this.blocksSinceLastPoll >= this.fallbackPollBlocks) {
+          this.blocksSinceLastPoll = 0;
+          await this.refresh(blockNumber);
+        }
       } catch (error) {
         logger.warn("block handler refresh failed, will retry next block", { blockNumber, error: String(error) });
       }
@@ -84,7 +93,7 @@ export class PriceFeed {
     this.wsProvider.on("block", this.blockHandler);
     const latest = await this.wsProvider.getBlockNumber();
     await this.refresh(latest);
-    logger.info("price feed started", { poolCount: this.poolsByAddress.size, latestBlock: latest });
+    logger.info("price feed started", { poolCount: this.poolsByAddress.size, latestBlock: latest, fallbackPollBlocks: this.fallbackPollBlocks });
   }
 
   async stop(): Promise<void> {
@@ -126,6 +135,17 @@ export class PriceFeed {
   getStalePools(nowMs = Date.now()): PoolState[] {
     const cutoff = nowMs - this.staleMs;
     return this.cache.getAll().filter((state) => state.updatedAtMs < cutoff);
+  }
+
+  updateSinglePool(poolAddress: string, dynamic: PoolDynamicState): PoolState | null {
+    const meta = this.poolsByAddress.get(poolAddress.toLowerCase());
+    if (!meta) {
+      logger.warn("updateSinglePool: unknown pool address", { poolAddress });
+      return null;
+    }
+
+    const updated = this.cache.upsert(meta, dynamic);
+    return updated;
   }
 
   private notify(updated: PoolState[], blockNumber: number): void {

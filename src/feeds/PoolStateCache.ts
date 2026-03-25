@@ -51,6 +51,16 @@ export class PoolStateCache {
     });
   }
 
+  getByAddress(poolAddress: string): PoolState | undefined {
+    const addr = poolAddress.toLowerCase();
+    for (const state of this.states.values()) {
+      if (state.poolAddress.toLowerCase() === addr) {
+        return state;
+      }
+    }
+    return undefined;
+  }
+
   pruneOlderThan(cutoffMs: number): number {
     const before = this.states.size;
 

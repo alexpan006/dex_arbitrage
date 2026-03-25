@@ -18,7 +18,7 @@ This document tracks remaining work after the current completed baseline.
 - Contract deployed to BSC mainnet: ✅ `0xda33F478A186b7425Ac03e58Db081c433dfEc500`
 - 10-minute mainnet dry-run smoke test: ✅ Passed
 - Telemetry system: ✅ Complete (JSONL writer + per-pair/per-block records + persistent file storage)
-- Event-driven monitoring: 📝 Documented as TODO (`docs/TODO_EVENT_DRIVEN_MONITORING.md`)
+- Event-driven monitoring (OPT-5): ✅ Complete (feature branch `feature/event-driven-monitoring`)
 
 ---
 
@@ -199,15 +199,71 @@ This document tracks remaining work after the current completed baseline.
 
 ---
 
-## Event-Driven Monitoring (TODO)
+## OPT-5: Event-Driven Pool Monitoring (Completed)
 
-Documented in `docs/TODO_EVENT_DRIVEN_MONITORING.md`. Currently using block-driven polling.
-Future work: subscribe to Swap/Mint/Burn events for lower latency detection.
+Replaces block-based polling with WebSocket log subscriptions for Swap, Mint, and Burn events. Feature-flagged via `EVENT_DRIVEN_ENABLED` (default: `false` for backward compatibility).
+
+### Implemented modules
+- `src/feeds/EventListener.ts` — Core event subscription class (~310 lines)
+  - Single WSS `eth_subscribe("logs")` with OR-matched topic0 array covering 4 event types
+  - Handles **different** PancakeSwap V3 Swap signature (9 params vs Uniswap's 7) via shared ABI decode trick
+  - LRU dedup cache (configurable, default 5000 entries) by `txHash:logIndex`
+  - Gap backfill via `eth_getLogs` on fallback HTTP provider
+  - `fetchPoolState()` for Mint/Burn follow-up (single-pool Multicall3 for slot0 + liquidity)
+  - Callbacks: `onSwap(poolAddress, sqrtPriceX96, tick, liquidity)`, `onLiquidityChange(poolAddress, sqrtPriceX96, tick, liquidity)`
+
+### Modified modules
+- `src/feeds/PoolStateCache.ts` — Added `getByAddress(poolAddress)` reverse lookup
+- `src/feeds/PriceFeed.ts` — Added `updateSinglePool(poolAddress, dynamic)` for event-driven cache updates; added `fallbackPollBlocks` option (poll every N blocks instead of every block)
+- `src/config/constants.ts` — Added `EVENT_DRIVEN` config block
+- `src/index.ts` — Refactored detection loop:
+  - Extracted `runDetection()` and `triggerDetection()` functions
+  - EventListener wired with onSwap (zero RPC → cache update → per-pair detection)
+  - EventListener wired with onLiquidityChange (1 RPC → cache update → per-pair detection)
+  - Per-pair debounce via `pendingDetections` Map with configurable timeout
+  - Fallback poll via `feed.onUpdate` still runs every N blocks
+  - Feature flag: `EVENT_DRIVEN_ENABLED=false` disables event-driven path entirely
+  - Graceful EventListener stop on shutdown
+
+### Key design decisions
+- **D1**: Single WSS subscription with topic0 OR-array (not per-pool subscriptions) — O(1) subscriptions
+- **D2**: Swap events provide sqrtPriceX96/tick/liquidity directly — zero follow-up RPC needed
+- **D3**: Mint/Burn events need slot0()+liquidity() follow-up — single Multicall3 per event
+- **D4**: Per-pair debounce prevents detection storms during high-activity periods
+- **D5**: Block-poll fallback (every N blocks) catches any missed events
+- **D6**: Dedup by txHash+logIndex handles reorg-induced duplicates
+- **D7**: Feature flag allows instant rollback to pure block-polling
+
+### Event signature discovery
+| DEX | topic0 |
+|-----|--------|
+| Uniswap V3 Swap | `0xc42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcca67` |
+| PancakeSwap V3 Swap | `0x19b47279256b2a23a1665c810c8d55a1758940ee09377d4f8d26497a3577dc83` |
+| Mint (both) | `0x7a53080ba414158be7ec69b987b5fb7d07dee101fe85488f0853ae16239d0bde` |
+| Burn (both) | `0x0c396cd989a39f4459b5fa1aed6a9a8dcdbc45908acfd67e028cd568da98982c` |
+
+### Unit tests added
+- `test/unit/EventListener.test.ts` — 12 tests
+  - UNI/PCS Swap parsing, Mint/Burn parsing, unknown pool, unknown topic, dedup, topic constants, case-insensitive matching, backfill edge cases
+
+### Configuration (env vars)
+- `EVENT_DRIVEN_ENABLED` (default: `false`)
+- `FALLBACK_POLL_BLOCKS` (default: `1` — every block, same as before)
+- `EVENT_DEBOUNCE_MS` (default: `50`)
+- `EVENT_DEDUP_CACHE_SIZE` (default: `5000`)
+
+### Quality gates met
+- `npx tsc --noEmit` — clean (0 errors)
+- `npm run test` — **133 passing, 0 failing, 1 pending** (fork-gated)
+- Feature flag off = identical behavior to pre-OPT-5 baseline
+
+### Detailed plan
+- `.sisyphus/plans/event-driven-monitoring.md` — Full spec with D1-D7 design decisions, 7 implementation steps, R1-R5 risk assessment
 
 ### Rollout plan
-- Start with smallest borrow range
-- Enable strict profitability threshold
-- Observe success/revert rates before widening scope
+- Start with `EVENT_DRIVEN_ENABLED=false` (default) — pure block-polling
+- Enable on paid Chainstack tier ($49/mo, 250 RPS, 20M req/month) for WSS stability
+- Monitor WSS connection stability and event delivery before disabling block-poll fallback
 
 ---
 

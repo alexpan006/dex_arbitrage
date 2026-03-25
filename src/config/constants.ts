@@ -73,5 +73,12 @@ export const TELEMETRY = {
   maxFileSizeBytes: parseInt(process.env.TELEMETRY_MAX_FILE_SIZE_MB || "50", 10) * 1024 * 1024,
 } as const;
 
+export const EVENT_DRIVEN = {
+  enabled: process.env.EVENT_DRIVEN_ENABLED !== "false",
+  fallbackPollBlocks: parseInt(process.env.FALLBACK_POLL_BLOCKS || "10", 10),
+  debounceMs: parseInt(process.env.EVENT_DEBOUNCE_MS || "50", 10),
+  dedupCacheSize: parseInt(process.env.EVENT_DEDUP_CACHE_SIZE || "5000", 10),
+} as const;
+
 export const MIN_SQRT_RATIO = BigInt("4295128739");
 export const MAX_SQRT_RATIO = BigInt("1461446703485210103287273052203988822378723970342");

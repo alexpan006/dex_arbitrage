@@ -2,6 +2,66 @@
 
 All notable project changes are tracked here.
 
+## 2026-03-25
+
+### OPT-5: Event-Driven Pool Monitoring
+
+#### New Features
+- **Created `src/feeds/EventListener.ts`** — WSS log subscription for real-time pool state updates:
+  - Single `eth_subscribe("logs")` covering all monitored pools with OR-matched topic0 array
+  - Handles both Uniswap V3 and PancakeSwap V3 Swap events (different ABI signatures, different topic0 hashes)
+  - Decodes first 5 data fields for both DEXs — PCS has 7 fields but first 5 are identical layout
+  - Swap events carry full pool state (sqrtPriceX96, tick, liquidity) — zero follow-up RPC needed
+  - Mint/Burn events trigger single-pool Multicall3 (slot0 + liquidity) for fresh state
+  - LRU dedup cache (configurable, default 5000 entries) by `txHash:logIndex` for reorg protection
+  - Gap backfill via `eth_getLogs` when `lastProcessedBlock` falls behind
+  - `parseLog()` exposed for unit testing without WSS connection
+
+- **Modified `src/feeds/PriceFeed.ts`** — added event-driven support:
+  - `updateSinglePool(poolAddress, dynamic)` — update cache for one pool from event data
+  - `fallbackPollBlocks` option — reduce multicall frequency from every block to every N blocks
+  - Block counter in `start()` handler — only calls `refresh()` when counter reaches threshold
+  - Backward compatible — `fallbackPollBlocks=1` preserves original every-block behavior
+
+- **Modified `src/feeds/PoolStateCache.ts`** — added `getByAddress()` for pool lookup by address
+
+- **Refactored `src/index.ts`** — per-pair event-driven detection:
+  - Extracted detection+execution logic into reusable `runDetection()` function
+  - `triggerDetection()` wrapper handles concurrency lock and rerun-after-current logic
+  - Per-pair debounce (configurable, default 50ms) — multiple Swap events in same block trigger only one detection
+  - EventListener wired with onSwap callback (zero RPC → cache update → pair detection)
+  - EventListener wired with onLiquidityChange callback (1 RPC → cache update → pair detection)
+  - Fallback poll via `feed.onUpdate` still runs every N blocks (safety net)
+  - Feature flag: `EVENT_DRIVEN_ENABLED=false` falls back to exact previous behavior
+  - Graceful EventListener shutdown on SIGINT/SIGTERM
+
+- **Added `EVENT_DRIVEN` config block to `src/config/constants.ts`**:
+  - `EVENT_DRIVEN_ENABLED` (default: `true`)
+  - `FALLBACK_POLL_BLOCKS` (default: `10`)
+  - `EVENT_DEBOUNCE_MS` (default: `50`)
+  - `EVENT_DEDUP_CACHE_SIZE` (default: `5000`)
+
+- **Updated `.env.example`** with event-driven configuration variables
+
+#### Tests
+- **Created `test/unit/EventListener.test.ts`** — 12 tests:
+  - UNI Swap event parsing (full decode verification)
+  - PCS Swap event parsing (7-field data, first 5 used)
+  - Mint event parsing
+  - Burn event parsing
+  - Unknown pool address returns null
+  - Unknown topic0 returns null
+  - Dedup cache starts empty
+  - UNI and PCS Swap topics are different
+  - All topics are valid hex strings
+  - Case-insensitive pool address matching
+  - Backfill disabled returns 0
+  - Backfill fromBlock > toBlock returns 0
+
+#### Verification Performed
+- `npx tsc --noEmit` passed
+- `npm test` passed (133 passing, 0 failing, 1 pending)
+
 ## 2026-03-20
 
 ### Telemetry System & Persistent Data Storage
