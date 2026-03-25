@@ -29,3 +29,21 @@ export function relativeDiffBps(a: number, b: number): number {
 export function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }
+
+/**
+ * Estimate the approximate token0 amount available around the current tick
+ * in a Uniswap V3 / PancakeSwap V3 pool.
+ *
+ * Uses the concentrated-liquidity formula: token0 ≈ L / sqrtPrice.
+ * Since sqrtPriceX96 = sqrtPrice × 2^96, this becomes:
+ *   token0 ≈ L × 2^96 / sqrtPriceX96
+ *
+ * This is a rough estimate (actual depth depends on tick range distribution),
+ * but it's good enough to cap borrow amounts at a sane fraction of pool depth.
+ */
+export function estimateToken0Available(sqrtPriceX96: bigint, liquidity: bigint): bigint {
+  if (sqrtPriceX96 <= 0n || liquidity <= 0n) {
+    return 0n;
+  }
+  return (liquidity * Q96) / sqrtPriceX96;
+}

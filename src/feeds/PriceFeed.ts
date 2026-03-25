@@ -74,7 +74,11 @@ export class PriceFeed {
 
     this.running = true;
     this.blockHandler = async (blockNumber: number): Promise<void> => {
-      await this.refresh(blockNumber);
+      try {
+        await this.refresh(blockNumber);
+      } catch (error) {
+        logger.warn("block handler refresh failed, will retry next block", { blockNumber, error: String(error) });
+      }
     };
 
     this.wsProvider.on("block", this.blockHandler);
@@ -109,7 +113,8 @@ export class PriceFeed {
     const aggregate = wsResult ?? (await this.tryAggregate(this.multicallFallback, calls));
 
     if (!aggregate) {
-      throw new Error("PRICE_FEED_MULTICALL_FAILED");
+      logger.warn("multicall failed on both providers, returning stale cache");
+      return this.cache.getAll();
     }
 
     const now = Date.now();

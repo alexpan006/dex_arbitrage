@@ -2,7 +2,7 @@ import * as dotenv from "dotenv";
 dotenv.config();
 
 import { JsonRpcProvider, Wallet, WebSocketProvider } from "ethers";
-import { EXECUTION, MONITORING, RPC } from "./config/constants";
+import { EXECUTION, MONITORING, RPC, STRATEGY, TELEMETRY } from "./config/constants";
 import { ExecutionEngine } from "./execution/ExecutionEngine";
 import { GasEstimator } from "./execution/GasEstimator";
 import { PrivateTxSubmitter } from "./execution/PrivateTxSubmitter";
@@ -10,11 +10,23 @@ import { PoolDiscovery } from "./feeds/PoolDiscovery";
 import { buildMonitoredPools, PriceFeed } from "./feeds/PriceFeed";
 import { DiscordNotifier } from "./monitoring/DiscordNotifier";
 import { RollingDetectorMetrics } from "./monitoring/RollingDetectorMetrics";
+import { TelemetryWriter } from "./monitoring/TelemetryWriter";
 import { OpportunityDetector } from "./strategy/OpportunityDetector";
 import { QuoterService } from "./strategy/QuoterService";
 import { createLogger } from "./utils/logger";
 
 const logger = createLogger("index");
+
+function normalizePrivateKey(raw: string): string | null {
+  const trimmed = raw.trim();
+  if (!trimmed || trimmed === "your_private_key_here") {
+    return null;
+  }
+
+  const withPrefix = trimmed.startsWith("0x") ? trimmed : `0x${trimmed}`;
+  const isValid = /^0x[0-9a-fA-F]{64}$/.test(withPrefix);
+  return isValid ? withPrefix : null;
+}
 
 async function main(): Promise<void> {
   logger.info("DEX Arbitrage Bot starting");
@@ -29,11 +41,12 @@ async function main(): Promise<void> {
   const wsProvider = new WebSocketProvider(RPC.chainstackWss);
   const fallbackProvider = new JsonRpcProvider(RPC.chainstackHttp);
 
-  const privateKey = process.env.PRIVATE_KEY || "";
+  const rawPrivateKey = process.env.PRIVATE_KEY || "";
+  const privateKey = normalizePrivateKey(rawPrivateKey);
   let engine: ExecutionEngine | null = null;
 
   if (!EXECUTION.dryRun && !privateKey) {
-    throw new Error("PRIVATE_KEY required when DRY_RUN is disabled");
+    throw new Error("Valid PRIVATE_KEY required when DRY_RUN is disabled");
   }
 
   if (privateKey) {
@@ -59,7 +72,20 @@ async function main(): Promise<void> {
 
   const monitoredPools = buildMonitoredPools(discoveredPairs);
   const feed = new PriceFeed(wsProvider, fallbackProvider, monitoredPools);
-  const detector = new OpportunityDetector(quoter);
+
+  const telemetry = new TelemetryWriter({
+    enabled: TELEMETRY.enabled,
+    dataDir: TELEMETRY.dataDir,
+    bufferSize: TELEMETRY.bufferSize,
+    flushIntervalMs: TELEMETRY.flushIntervalMs,
+    maxFileSizeBytes: TELEMETRY.maxFileSizeBytes,
+  });
+  telemetry.start();
+
+  const detector = new OpportunityDetector(quoter, {
+    maxBorrowAmountUsd: STRATEGY.maxBorrowAmountUsd,
+    minProfitThresholdUsd: STRATEGY.minProfitThresholdUsd,
+  }, telemetry);
   const rolling = new RollingDetectorMetrics(60_000);
   let lastSummaryLogAt = 0;
   let lastDiscordStatusAt = 0;
@@ -82,7 +108,7 @@ async function main(): Promise<void> {
         do {
           rerunAfterCurrent = false;
 
-          const opportunities = await detector.detect(feed.getCache().getAll());
+          const opportunities = await detector.detect(feed.getCache().getAll(), nextBlock);
           const metrics = detector.getLastMetrics();
           rolling.add(metrics);
           logger.debug("detector metrics", {
@@ -225,6 +251,7 @@ async function main(): Promise<void> {
 
   const shutdown = async (signal: string) => {
     logger.info("shutting down", { signal });
+    await telemetry.stop();
     if (notifier.isEnabled()) {
       await notifier.sendShutdown(signal);
     }

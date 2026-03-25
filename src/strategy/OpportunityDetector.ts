@@ -1,8 +1,10 @@
 import { STRATEGY } from "../config/constants";
 import { Dex } from "../config/pools";
+import { getTokenDecimals, isStablecoin } from "../config/tokens";
 import { PoolState } from "../feeds/PoolStateCache";
+import { TelemetryRecord, TelemetryWriter } from "../monitoring/TelemetryWriter";
 import { createLogger } from "../utils/logger";
-import { relativeDiffBps, sqrtPriceX96ToPriceFloat } from "../utils/math";
+import { estimateToken0Available, relativeDiffBps, sqrtPriceX96ToPriceFloat } from "../utils/math";
 import { HybridAmountOptimizer, HybridOptimizerMetrics } from "./HybridAmountOptimizer";
 import { QuoterService } from "./QuoterService";
 
@@ -22,22 +24,30 @@ export interface Opportunity {
 
 export interface OpportunityDetectorOptions {
   minSpreadBps: number;
-  maxBorrowToken0: bigint;
-  minExpectedProfitToken0: bigint;
-  minBorrowToken0: bigint;
+  maxBorrowAmountUsd: number;
+  minProfitThresholdUsd: number;
+  maxBorrowToken0?: bigint;
+  minExpectedProfitToken0?: bigint;
+  minBorrowToken0?: bigint;
   coarseRatiosBps: number[];
   refineIterations: number;
   maxQuoteEvaluations: number;
 }
 
+interface PairBorrowBounds {
+  maxBorrowToken0: bigint;
+  minBorrowToken0: bigint;
+  minExpectedProfitToken0: bigint;
+  liquidityCap?: bigint;
+}
+
 const DEFAULT_OPTIONS: OpportunityDetectorOptions = {
-  minSpreadBps: 10,
-  maxBorrowToken0: 10n * 10n ** 18n,
-  minExpectedProfitToken0: 10n ** 15n,
-  minBorrowToken0: 10n ** 15n,
-  coarseRatiosBps: [1000, 2000, 3500, 5000, 6500, 8000, 9000],
+  minSpreadBps: 2,
+  maxBorrowAmountUsd: STRATEGY.maxBorrowAmountUsd,
+  minProfitThresholdUsd: STRATEGY.minProfitThresholdUsd,
+  coarseRatiosBps: [1500, 3500, 5500, 7500, 9000],
   refineIterations: 4,
-  maxQuoteEvaluations: 16,
+  maxQuoteEvaluations: 13,
 };
 
 function pairKey(token0: string, token1: string, fee: number): string {
@@ -48,7 +58,7 @@ function pairKey(token0: string, token1: string, fee: number): string {
   return `${left}:${right}:${fee}`;
 }
 
-function estimateMinOutToken0(expectedAmountOutToken0: bigint, expectedProfitToken0: bigint): bigint {
+function estimateMinOutToken0(expectedAmountOutToken0: bigint, expectedProfitToken0: bigint, minProfitToken0: bigint): bigint {
   const slippageBufferBps = 25n;
   const bufferedOut = (expectedAmountOutToken0 * (10_000n - slippageBufferBps)) / 10_000n;
 
@@ -56,8 +66,7 @@ function estimateMinOutToken0(expectedAmountOutToken0: bigint, expectedProfitTok
     return bufferedOut;
   }
 
-  const minProfitFloor = BigInt(Math.floor(STRATEGY.minProfitThresholdUsd * 1e15));
-  const requiredProfit = expectedProfitToken0 > minProfitFloor ? minProfitFloor : expectedProfitToken0;
+  const requiredProfit = expectedProfitToken0 > minProfitToken0 ? minProfitToken0 : expectedProfitToken0;
   return bufferedOut > requiredProfit ? bufferedOut - requiredProfit : bufferedOut;
 }
 
@@ -87,6 +96,7 @@ export interface DetectorRunMetrics {
 export class OpportunityDetector {
   private readonly options: OpportunityDetectorOptions;
   private readonly quoter: QuoterService;
+  private readonly telemetry: TelemetryWriter | null;
   private metrics: DetectorRunMetrics = {
     startedAtMs: 0,
     finishedAtMs: 0,
@@ -103,16 +113,17 @@ export class OpportunityDetector {
     optimizerParabolicAcceptedCount: 0,
   };
 
-  constructor(quoter: QuoterService, options: Partial<OpportunityDetectorOptions> = {}) {
+  constructor(quoter: QuoterService, options: Partial<OpportunityDetectorOptions> = {}, telemetry?: TelemetryWriter) {
     this.quoter = quoter;
     this.options = { ...DEFAULT_OPTIONS, ...options };
+    this.telemetry = telemetry ?? null;
   }
 
   getLastMetrics(): DetectorRunMetrics {
     return this.metrics;
   }
 
-  async detect(states: PoolState[]): Promise<Opportunity[]> {
+  async detect(states: PoolState[], blockNumber?: number): Promise<Opportunity[]> {
     const runStartedAt = Date.now();
     let pairsScanned = 0;
     let pairsWithSpread = 0;
@@ -139,7 +150,21 @@ export class OpportunityDetector {
 
     const opportunities: Opportunity[] = [];
 
-    for (const pairStates of byPair.values()) {
+    // Phase A: Spread check — pure math, collect qualified pairs (OPT-2)
+    interface QualifiedPair {
+      key: string;
+      buyPool: PoolState;
+      sellPool: PoolState;
+      uniPrice: number;
+      pcsPrice: number;
+      spreadBps: number;
+      bounds: PairBorrowBounds;
+    }
+    const qualifiedPairs: QualifiedPair[] = [];
+    const blk = blockNumber ?? 0;
+    const spreadCheckTimestamp = new Date().toISOString();
+
+    for (const [key, pairStates] of byPair) {
       pairsScanned += 1;
       const uni = pairStates.find((s) => s.dex === Dex.UniswapV3);
       const pcs = pairStates.find((s) => s.dex === Dex.PancakeSwapV3);
@@ -153,51 +178,71 @@ export class OpportunityDetector {
       const spreadBps = relativeDiffBps(uniPrice, pcsPrice);
 
       if (spreadBps < this.options.minSpreadBps) {
+        this.emitPairTelemetry(spreadCheckTimestamp, blk, key, uniPrice, pcsPrice, spreadBps, false, false, "spread_below_min");
         continue;
       }
       pairsWithSpread += 1;
 
       const buyPool = uniPrice < pcsPrice ? pcs : uni;
       const sellPool = uniPrice < pcsPrice ? uni : pcs;
+      const bounds = this.computePairBorrowBounds(buyPool, sellPool, uniPrice, pcsPrice);
 
-      const bestResult = await this.findBestCandidate(buyPool, sellPool);
-      optimizerRuns += 1;
-      optimizerEvalCount += bestResult.optimizerMetrics.evaluationCount;
-      optimizerCacheHits += bestResult.optimizerMetrics.cacheHits;
-      if (bestResult.optimizerMetrics.budgetExhausted) {
-        optimizerBudgetExhaustedCount += 1;
+      qualifiedPairs.push({ key, buyPool, sellPool, uniPrice, pcsPrice, spreadBps, bounds });
+    }
+
+    // Phase B: Quote all qualified pairs in parallel (OPT-2)
+    if (qualifiedPairs.length > 0) {
+      const pairResults = await Promise.all(
+        qualifiedPairs.map(async (qp) => {
+          const bestResult = await this.findBestCandidate(qp.buyPool, qp.sellPool, qp.bounds);
+          return { qp, bestResult };
+        })
+      );
+
+      for (const { qp, bestResult } of pairResults) {
+        const now = new Date().toISOString();
+        optimizerRuns += 1;
+        optimizerEvalCount += bestResult.optimizerMetrics.evaluationCount;
+        optimizerCacheHits += bestResult.optimizerMetrics.cacheHits;
+        if (bestResult.optimizerMetrics.budgetExhausted) {
+          optimizerBudgetExhaustedCount += 1;
+        }
+        if (bestResult.optimizerMetrics.parabolicAccepted) {
+          optimizerParabolicAcceptedCount += 1;
+        }
+        quoteRoundTripAttempts += bestResult.roundTripAttempts;
+        quoteRoundTripFailures += bestResult.roundTripFailures;
+
+        const best = bestResult.bestCandidate;
+        if (!best) {
+          this.emitPairTelemetry(now, blk, qp.key, qp.uniPrice, qp.pcsPrice, qp.spreadBps, true, true, "optimizer_no_candidate", undefined, undefined, qp.bounds);
+          continue;
+        }
+
+        if (best.profitToken0 < qp.bounds.minExpectedProfitToken0) {
+          this.emitPairTelemetry(now, blk, qp.key, qp.uniPrice, qp.pcsPrice, qp.spreadBps, true, true, "profit_below_min", best, qp.bounds.minExpectedProfitToken0, qp.bounds);
+          continue;
+        }
+
+        this.emitPairTelemetry(now, blk, qp.key, qp.uniPrice, qp.pcsPrice, qp.spreadBps, true, true, "accepted", best, qp.bounds.minExpectedProfitToken0, qp.bounds);
+
+        const amountOutMinToken0 = estimateMinOutToken0(best.amountBackToken0, best.profitToken0, qp.bounds.minExpectedProfitToken0);
+
+        const opportunity: Opportunity = {
+          token0: qp.buyPool.token0,
+          token1: qp.buyPool.token1,
+          fee: qp.buyPool.fee,
+          borrowDex: qp.buyPool.dex,
+          buyPool: qp.buyPool,
+          sellPool: qp.sellPool,
+          grossSpreadBps: qp.spreadBps,
+          estimatedBorrowAmountToken0: best.amountInToken0,
+          amountOutMinToken0,
+        };
+
+        opportunities.push(opportunity);
+        opportunitiesFound += 1;
       }
-      if (bestResult.optimizerMetrics.parabolicAccepted) {
-        optimizerParabolicAcceptedCount += 1;
-      }
-      quoteRoundTripAttempts += bestResult.roundTripAttempts;
-      quoteRoundTripFailures += bestResult.roundTripFailures;
-
-      const best = bestResult.bestCandidate;
-      if (!best) {
-        continue;
-      }
-
-      if (best.profitToken0 < this.options.minExpectedProfitToken0) {
-        continue;
-      }
-
-      const amountOutMinToken0 = estimateMinOutToken0(best.amountBackToken0, best.profitToken0);
-
-      const opportunity: Opportunity = {
-        token0: buyPool.token0,
-        token1: buyPool.token1,
-        fee: buyPool.fee,
-        borrowDex: buyPool.dex,
-        buyPool,
-        sellPool,
-        grossSpreadBps: spreadBps,
-        estimatedBorrowAmountToken0: best.amountInToken0,
-        amountOutMinToken0,
-      };
-
-      opportunities.push(opportunity);
-      opportunitiesFound += 1;
     }
 
     opportunities.sort((a, b) => b.grossSpreadBps - a.grossSpreadBps);
@@ -226,12 +271,142 @@ export class OpportunityDetector {
       optimizerParabolicAcceptedCount,
     };
 
+    if (this.telemetry) {
+      this.telemetry.recordBlock({
+        timestamp: new Date().toISOString(),
+        blockNumber: blockNumber ?? 0,
+        pairsScanned,
+        pairsWithSpread,
+        opportunitiesFound,
+        quoteRoundTripAttempts,
+        quoteRoundTripFailures,
+        detectDurationMs: this.metrics.durationMs,
+      });
+    }
+
     return opportunities;
+  }
+
+  private emitPairTelemetry(
+    timestamp: string,
+    blockNumber: number,
+    pair: string,
+    uniPrice: number,
+    pcsPrice: number,
+    spreadBps: number,
+    spreadAboveThreshold: boolean,
+    quoteAttempted: boolean,
+    rejectReason: TelemetryRecord["rejectReason"],
+    candidate?: CandidateQuote,
+    minExpectedProfitToken0?: bigint,
+    pairBounds?: PairBorrowBounds
+  ): void {
+    if (!this.telemetry) return;
+
+    this.telemetry.recordPair({
+      timestamp,
+      blockNumber,
+      pair,
+      uniPrice,
+      pcsPrice,
+      spreadBps,
+      spreadAboveThreshold,
+      quoteAttempted,
+      borrowAmount: candidate?.amountInToken0.toString(),
+      firstLegOut: candidate?.amountOutToken1.toString(),
+      secondLegOut: candidate?.amountBackToken0.toString(),
+      expectedProfit: candidate?.profitToken0.toString(),
+      profitAboveMin: candidate && minExpectedProfitToken0 !== undefined
+        ? candidate.profitToken0 >= minExpectedProfitToken0
+        : undefined,
+      maxBorrowToken0: pairBounds?.maxBorrowToken0.toString(),
+      liquidityCap: pairBounds?.liquidityCap?.toString(),
+      rejectReason,
+    });
+  }
+
+  private computePairBorrowBounds(buyPool: PoolState, sellPool: PoolState, uniPrice: number, pcsPrice: number): PairBorrowBounds {
+    if (this.options.maxBorrowToken0 !== undefined && this.options.minExpectedProfitToken0 !== undefined) {
+      return {
+        maxBorrowToken0: this.options.maxBorrowToken0,
+        minBorrowToken0: this.options.minBorrowToken0 ?? 10n ** 15n,
+        minExpectedProfitToken0: this.options.minExpectedProfitToken0,
+      };
+    }
+
+    const token0Decimals = getTokenDecimals(buyPool.token0);
+    const decimalsFactor = 10 ** token0Decimals;
+
+    const token0PriceUsd = this.deriveToken0PriceUsd(buyPool, uniPrice, pcsPrice);
+
+    const maxBorrowUsd = this.options.maxBorrowAmountUsd;
+    const maxBorrowToken0Float = token0PriceUsd > 0 ? maxBorrowUsd / token0PriceUsd : 0;
+    let maxBorrowToken0 = maxBorrowToken0Float > 0
+      ? BigInt(Math.floor(maxBorrowToken0Float * decimalsFactor))
+      : BigInt(decimalsFactor);
+
+    // Cap at 30% of the shallower pool's token0 depth to avoid catastrophic slippage
+    const LIQUIDITY_CAP_BPS = 3000n;
+    const buyToken0Available = estimateToken0Available(buyPool.sqrtPriceX96, buyPool.liquidity);
+    const sellToken0Available = estimateToken0Available(sellPool.sqrtPriceX96, sellPool.liquidity);
+    const minPoolToken0 = buyToken0Available < sellToken0Available ? buyToken0Available : sellToken0Available;
+    const liquidityCap = (minPoolToken0 * LIQUIDITY_CAP_BPS) / 10_000n;
+
+    if (liquidityCap > 0n && liquidityCap < maxBorrowToken0) {
+      maxBorrowToken0 = liquidityCap;
+    }
+
+    const minBorrowFloat = 0.001;
+    const minBorrowToken0 = this.options.minBorrowToken0
+      ?? BigInt(Math.floor(minBorrowFloat * decimalsFactor));
+
+    const minProfitUsd = this.options.minProfitThresholdUsd;
+    const minProfitFloat = token0PriceUsd > 0 ? minProfitUsd / token0PriceUsd : 0;
+    const minExpectedProfitToken0 = minProfitFloat > 0
+      ? BigInt(Math.floor(minProfitFloat * decimalsFactor))
+      : 10n ** BigInt(token0Decimals - 3);
+
+    logger.debug("per-pair borrow bounds", {
+      token0: buyPool.token0,
+      token0PriceUsd: token0PriceUsd.toFixed(4),
+      maxBorrowUsd,
+      maxBorrowToken0: maxBorrowToken0.toString(),
+      liquidityCap: liquidityCap.toString(),
+      buyPoolToken0Avail: buyToken0Available.toString(),
+      sellPoolToken0Avail: sellToken0Available.toString(),
+      minBorrowToken0: minBorrowToken0.toString(),
+      minProfitUsd,
+      minExpectedProfitToken0: minExpectedProfitToken0.toString(),
+    });
+
+    return { maxBorrowToken0, minBorrowToken0, minExpectedProfitToken0, liquidityCap };
+  }
+
+  private deriveToken0PriceUsd(pool: PoolState, uniPrice: number, pcsPrice: number): number {
+    const token0Lower = pool.token0.toLowerCase();
+    const token1Lower = pool.token1.toLowerCase();
+
+    if (isStablecoin(token0Lower)) {
+      return 1.0;
+    }
+
+    if (isStablecoin(token1Lower)) {
+      const avgPoolPrice = (uniPrice + pcsPrice) / 2;
+      const token0Decimals = getTokenDecimals(pool.token0);
+      const token1Decimals = getTokenDecimals(pool.token1);
+      const decimalAdjustment = 10 ** (token0Decimals - token1Decimals);
+      return avgPoolPrice * decimalAdjustment;
+    }
+
+    // Neither token is a stablecoin — fall back to conservative $1 estimate.
+    // This is safe because it just means borrow bounds = maxBorrowAmountUsd tokens.
+    return 1.0;
   }
 
   private async findBestCandidate(
     buyPool: PoolState,
-    sellPool: PoolState
+    sellPool: PoolState,
+    bounds: PairBorrowBounds
   ): Promise<{
     bestCandidate: CandidateQuote | null;
     optimizerMetrics: HybridOptimizerMetrics;
@@ -239,8 +414,8 @@ export class OpportunityDetector {
     roundTripFailures: number;
   }> {
     const optimizer = new HybridAmountOptimizer({
-      minAmountToken0: this.options.minBorrowToken0,
-      maxAmountToken0: this.options.maxBorrowToken0,
+      minAmountToken0: bounds.minBorrowToken0,
+      maxAmountToken0: bounds.maxBorrowToken0,
       coarseRatiosBps: this.options.coarseRatiosBps,
       refineIterations: this.options.refineIterations,
       maxQuoteEvaluations: this.options.maxQuoteEvaluations,
@@ -249,14 +424,24 @@ export class OpportunityDetector {
     let roundTripAttempts = 0;
     let roundTripFailures = 0;
 
-    const { bestPoint, metrics } = await optimizer.optimize(async (amountInToken0) => {
-      roundTripAttempts += 1;
-      const quote = await this.quoteRoundTrip(buyPool, sellPool, amountInToken0);
-      if (!quote) {
-        roundTripFailures += 1;
+    const { bestPoint, metrics } = await optimizer.optimize(
+      async (amountInToken0) => {
+        roundTripAttempts += 1;
+        const quote = await this.quoteRoundTrip(buyPool, sellPool, amountInToken0);
+        if (!quote) {
+          roundTripFailures += 1;
+        }
+        return quote ? quote.profitToken0 : null;
+      },
+      async (amounts) => {
+        roundTripAttempts += amounts.length;
+        const profits = await this.batchQuoteRoundTrips(buyPool, sellPool, amounts);
+        for (const p of profits) {
+          if (p === null) roundTripFailures += 1;
+        }
+        return profits;
       }
-      return quote ? quote.profitToken0 : null;
-    });
+    );
 
     if (!bestPoint) {
       return {
@@ -324,5 +509,53 @@ export class OpportunityDetector {
       });
       return null;
     }
+  }
+
+  private async batchQuoteRoundTrips(
+    buyPool: PoolState,
+    sellPool: PoolState,
+    amounts: bigint[]
+  ): Promise<(bigint | null)[]> {
+    const leg1Requests = amounts.map((amountIn) => ({
+      dex: buyPool.dex,
+      tokenIn: buyPool.token0,
+      tokenOut: buyPool.token1,
+      fee: buyPool.fee,
+      amountIn,
+    }));
+
+    const leg1Results = await this.quoter.batchQuoteExactInputSingle(leg1Requests);
+
+    const leg2Requests = leg1Results.map((r) => {
+      if (!r || r.amountOut <= 0n) return null;
+      return {
+        dex: sellPool.dex,
+        tokenIn: sellPool.token1,
+        tokenOut: sellPool.token0,
+        fee: sellPool.fee,
+        amountIn: r.amountOut,
+      };
+    });
+
+    const validLeg2Requests = leg2Requests.filter((r): r is NonNullable<typeof r> => r !== null);
+    const leg2IndexMap: number[] = [];
+    for (let i = 0; i < leg2Requests.length; i++) {
+      if (leg2Requests[i] !== null) leg2IndexMap.push(i);
+    }
+
+    const leg2Results = validLeg2Requests.length > 0
+      ? await this.quoter.batchQuoteExactInputSingle(validLeg2Requests)
+      : [];
+
+    const profits: (bigint | null)[] = new Array(amounts.length).fill(null);
+    for (let j = 0; j < leg2IndexMap.length; j++) {
+      const origIdx = leg2IndexMap[j];
+      const leg2 = leg2Results[j];
+      if (leg2 && leg2.amountOut > 0n) {
+        profits[origIdx] = leg2.amountOut - amounts[origIdx];
+      }
+    }
+
+    return profits;
   }
 }

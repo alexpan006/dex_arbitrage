@@ -65,5 +65,13 @@ export const MONITORING = {
   budgetExhaustedRateWarn: parseFloat(process.env.DETECTOR_BUDGET_EXHAUSTED_RATE_WARN || "0.20"),
 } as const;
 
+export const TELEMETRY = {
+  enabled: process.env.TELEMETRY_ENABLED !== "false",
+  dataDir: process.env.TELEMETRY_DATA_DIR || "data/telemetry",
+  bufferSize: parseInt(process.env.TELEMETRY_BUFFER_SIZE || "100", 10),
+  flushIntervalMs: parseInt(process.env.TELEMETRY_FLUSH_INTERVAL_MS || "5000", 10),
+  maxFileSizeBytes: parseInt(process.env.TELEMETRY_MAX_FILE_SIZE_MB || "50", 10) * 1024 * 1024,
+} as const;
+
 export const MIN_SQRT_RATIO = BigInt("4295128739");
 export const MAX_SQRT_RATIO = BigInt("1461446703485210103287273052203988822378723970342");

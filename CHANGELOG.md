@@ -2,6 +2,52 @@
 
 All notable project changes are tracked here.
 
+## 2026-03-20
+
+### Telemetry System & Persistent Data Storage
+
+#### New Features
+- **Implemented `src/monitoring/TelemetryWriter.ts`** — async buffered JSONL writer for structured telemetry:
+  - Per-pair records: spread (bps), prices, quote amounts, expected profit, reject reasons
+  - Per-block summary records: pairs scanned, spreads found, opportunities, quote stats, duration
+  - Async buffered writes (configurable buffer size, default 100 records)
+  - Periodic flush timer (configurable, default 5s) — unref'd so it doesn't block process exit
+  - File rotation when size exceeds threshold (configurable, default 50MB)
+  - Separate JSONL files for pair-level (`pairs_*.jsonl`) and block-level (`blocks_*.jsonl`) data
+  - All I/O errors swallowed — telemetry never crashes the bot
+  - Enabled/disabled via `TELEMETRY_ENABLED` env var
+
+- **Integrated telemetry into `OpportunityDetector.detect()`**:
+  - Now accepts optional `blockNumber` parameter for telemetry context
+  - Emits `TelemetryRecord` for every pair in every detection cycle
+  - Records reject reason for each pair: `spread_below_min`, `optimizer_no_candidate`, `profit_below_min`, `accepted`
+  - Records optimizer output when available: borrow amount, first/second leg output, expected profit
+  - Emits `BlockSummaryRecord` at end of each detection cycle
+  - Zero performance impact on hot path (buffer push only)
+
+- **Wired telemetry into main loop (`src/index.ts`)**:
+  - `TelemetryWriter` initialized from env config, started before feed
+  - Passed to `OpportunityDetector` via constructor
+  - Graceful shutdown flushes remaining telemetry before exit
+
+- **Persistent local file storage**:
+  - Data written to `data/telemetry/` directory (configurable via `TELEMETRY_DATA_DIR`)
+  - JSONL format for easy downstream processing (grep, jq, pandas)
+  - `data/` added to `.gitignore`
+
+- **Added telemetry configuration to `.env` and `.env.example`**:
+  - `TELEMETRY_ENABLED`, `TELEMETRY_DATA_DIR`, `TELEMETRY_BUFFER_SIZE`
+  - `TELEMETRY_FLUSH_INTERVAL_MS`, `TELEMETRY_MAX_FILE_SIZE_MB`
+
+- **Added `TELEMETRY` config block to `src/config/constants.ts`**
+
+#### Documentation
+- **Created `docs/TODO_EVENT_DRIVEN_MONITORING.md`**:
+  - Documents current block-polling approach and its limitations
+  - Proposes event-driven monitoring via Swap/Mint/Burn event subscriptions
+  - Includes target event signatures, implementation phases, architecture considerations
+  - Outlines migration path: dual-mode → event-primary → reduce poll frequency
+
 ## 2026-03-15
 
 ### Forknet Price Divergence & Bug Fixes

@@ -15,6 +15,10 @@ This document tracks remaining work after the current completed baseline.
 - Phase 8 (Mainnet deployment + read-only monitor): ✅ Forknet baseline complete
 - Phase 9 (Live execution): ✅ Forknet E2E validated (detection → execution pipeline)
 - Forknet divergence testing: ✅ Complete (buy/sell bug fixed, full pipeline verified)
+- Contract deployed to BSC mainnet: ✅ `0xda33F478A186b7425Ac03e58Db081c433dfEc500`
+- 10-minute mainnet dry-run smoke test: ✅ Passed
+- Telemetry system: ✅ Complete (JSONL writer + per-pair/per-block records + persistent file storage)
+- Event-driven monitoring: 📝 Documented as TODO (`docs/TODO_EVENT_DRIVEN_MONITORING.md`)
 
 ---
 
@@ -166,6 +170,39 @@ This document tracks remaining work after the current completed baseline.
 - Private tx route confirmed operational
 - Risk controls enabled and validated
 - Monitoring alerts verified end-to-end
+
+---
+
+## Telemetry System (Completed)
+
+### Implemented modules
+- `src/monitoring/TelemetryWriter.ts` — Async buffered JSONL writer with file rotation
+- Integration in `src/strategy/OpportunityDetector.ts` — Per-pair telemetry emission in detect loop
+- Wired in `src/index.ts` — TelemetryWriter lifecycle (start/stop) + injection into detector
+- Config in `src/config/constants.ts` — `TELEMETRY` block reading from env vars
+
+### Capabilities delivered
+- Per-pair, per-block structured telemetry written to JSONL files in `data/telemetry/`
+- Pair records include: prices, spread, quote results, profit estimates, reject reasons
+- Block records include: pairs scanned, spreads found, opportunities, duration
+- Async buffered writes (no hot-path I/O blocking)
+- Configurable buffer size, flush interval, file rotation threshold
+- Enable/disable via `TELEMETRY_ENABLED` env var
+- Graceful shutdown flushes remaining buffer
+
+### Configuration (env vars)
+- `TELEMETRY_ENABLED` (default: `true`)
+- `TELEMETRY_DATA_DIR` (default: `data/telemetry`)
+- `TELEMETRY_BUFFER_SIZE` (default: `100`)
+- `TELEMETRY_FLUSH_INTERVAL_MS` (default: `5000`)
+- `TELEMETRY_MAX_FILE_SIZE_MB` (default: `50`)
+
+---
+
+## Event-Driven Monitoring (TODO)
+
+Documented in `docs/TODO_EVENT_DRIVEN_MONITORING.md`. Currently using block-driven polling.
+Future work: subscribe to Swap/Mint/Burn events for lower latency detection.
 
 ### Rollout plan
 - Start with smallest borrow range

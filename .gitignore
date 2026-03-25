@@ -5,6 +5,7 @@ node_modules/
 .env
 .env.local
 .env.*.local
+.env.template-ready
 
 # Hardhat artifacts
 artifacts/
@@ -33,6 +34,9 @@ Thumbs.db
 *.log
 npm-debug.log*
 pnpm-debug.log*
+
+# Telemetry data
+data/
 
 # Misc
 .opencode/

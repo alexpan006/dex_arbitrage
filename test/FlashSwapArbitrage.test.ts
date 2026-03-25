@@ -24,6 +24,7 @@ const DEX_UNISWAP = 0;
 const DEX_PANCAKE = 1;
 
 const MIN_SQRT_RATIO_PLUS_ONE = 4295128740n;
+const INITIAL_MAX_BORROW_AMOUNT = ethers.parseEther("100000");
 
 type Fixture = {
   ownerAddress: string;
@@ -43,7 +44,8 @@ async function deployFixture(): Promise<Fixture> {
     UNISWAP_V3_FACTORY,
     PANCAKE_V3_DEPLOYER,
     UNISWAP_V3_INIT_CODE_HASH,
-    PANCAKE_V3_INIT_CODE_HASH
+    PANCAKE_V3_INIT_CODE_HASH,
+    INITIAL_MAX_BORROW_AMOUNT
   );
   await arbitrage.waitForDeployment();
 
@@ -83,6 +85,11 @@ describe("FlashSwapArbitrage", function () {
       const { arbitrage } = await loadFixture(deployFixture);
       expect(await arbitrage.paused()).to.equal(false);
     });
+
+    it("sets initial max borrow amount", async function () {
+      const { arbitrage } = await loadFixture(deployFixture);
+      expect(await arbitrage.maxBorrowAmount()).to.equal(INITIAL_MAX_BORROW_AMOUNT);
+    });
   });
 
   describe("Access Control (onlyOwner)", function () {
@@ -112,6 +119,11 @@ describe("FlashSwapArbitrage", function () {
       await expect(arbitrage.connect(other).withdrawToken(await mockToken.getAddress(), 1n)).to.be.revertedWith(
         "NOT_OWNER"
       );
+    });
+
+    it("reverts withdrawBNB for non-owner", async function () {
+      const { arbitrage, other } = await loadFixture(deployFixture);
+      await expect(arbitrage.connect(other).withdrawBNB(1n)).to.be.revertedWith("NOT_OWNER");
     });
 
     it("allows owner pause/unpause", async function () {
@@ -163,7 +175,7 @@ describe("FlashSwapArbitrage", function () {
         poolArb: ethers.ZeroAddress,
         borrowDex: DEX_UNISWAP,
         zeroForOne: true,
-        amountSpecified: ethers.parseEther("100.000000000000000001"),
+        amountSpecified: ethers.parseEther("100000.000000000000000001"),
         sqrtPriceLimitX96: MIN_SQRT_RATIO_PLUS_ONE,
         amountOutMin: 0n,
       };
@@ -184,6 +196,23 @@ describe("FlashSwapArbitrage", function () {
       };
 
       await expect(arbitrage.executeArbitrage(params)).to.be.revertedWith("INVALID_AMOUNT");
+    });
+
+    it("allows owner to update max borrow amount", async function () {
+      const { arbitrage } = await loadFixture(deployFixture);
+      const newMax = ethers.parseEther("250000");
+      await arbitrage.setMaxBorrowAmount(newMax);
+      expect(await arbitrage.maxBorrowAmount()).to.equal(newMax);
+    });
+
+    it("reverts setMaxBorrowAmount for non-owner", async function () {
+      const { arbitrage, other } = await loadFixture(deployFixture);
+      await expect(arbitrage.connect(other).setMaxBorrowAmount(ethers.parseEther("1"))).to.be.revertedWith("NOT_OWNER");
+    });
+
+    it("reverts setMaxBorrowAmount = 0", async function () {
+      const { arbitrage } = await loadFixture(deployFixture);
+      await expect(arbitrage.setMaxBorrowAmount(0n)).to.be.revertedWith("INVALID_MAX_BORROW");
     });
   });
 
@@ -260,6 +289,30 @@ describe("FlashSwapArbitrage", function () {
 
       expect(await mockToken.balanceOf(arbitrageAddress)).to.equal(0n);
       expect(await mockToken.balanceOf(ownerAddress)).to.equal(ownerBeforeAll + (fundingAmount - withdrawAmount));
+    });
+
+    it("withdrawBNB works", async function () {
+      const { arbitrage, owner } = await loadFixture(deployFixture);
+      const arbitrageAddress = await arbitrage.getAddress();
+      const ownerAddress = await owner.getAddress();
+
+      const fundAmount = ethers.parseEther("0.01");
+      await owner.sendTransaction({ to: arbitrageAddress, value: fundAmount });
+
+      const contractBalanceBefore = await ethers.provider.getBalance(arbitrageAddress);
+      expect(contractBalanceBefore).to.equal(fundAmount);
+
+      const ownerBalanceBefore = await ethers.provider.getBalance(ownerAddress);
+      const tx = await arbitrage.withdrawBNB(fundAmount);
+      const receipt = await tx.wait();
+      const gasPrice = tx.gasPrice ?? 0n;
+      const gasCost = (receipt?.gasUsed ?? 0n) * gasPrice;
+
+      const contractBalanceAfter = await ethers.provider.getBalance(arbitrageAddress);
+      const ownerBalanceAfter = await ethers.provider.getBalance(ownerAddress);
+
+      expect(contractBalanceAfter).to.equal(0n);
+      expect(ownerBalanceAfter).to.equal(ownerBalanceBefore + fundAmount - gasCost);
     });
   });
 

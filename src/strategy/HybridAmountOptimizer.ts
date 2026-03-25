@@ -45,37 +45,36 @@ function clampBigInt(value: bigint, min: bigint, max: bigint): bigint {
   return value;
 }
 
-function toTokenFloat(amount: bigint): number {
-  return Number(amount) / 1e18;
-}
+function solveParabolicVertexNormalized(
+  x1: bigint, y1: bigint,
+  x2: bigint, y2: bigint,
+  x3: bigint, y3: bigint,
+): bigint | null {
+  const span = Number(x3 - x1);
+  if (span <= 0) return null;
 
-function fromTokenFloat(amount: number): bigint {
-  if (!Number.isFinite(amount) || amount <= 0) {
-    return 0n;
-  }
-  return BigInt(Math.floor(amount * 1e18));
-}
+  const t1 = 0;
+  const t2 = Number(x2 - x1) / span;
+  const t3 = 1;
 
-function solveParabolicVertex(x1: number, y1: number, x2: number, y2: number, x3: number, y3: number): number | null {
-  const d12 = (y2 - y1) / (x2 - x1);
-  const d23 = (y3 - y2) / (x3 - x2);
-  const a = (d23 - d12) / (x3 - x1);
-  const b = d12 - a * (x1 + x2);
+  const fy1 = Number(y1);
+  const fy2 = Number(y2);
+  const fy3 = Number(y3);
 
-  if (!Number.isFinite(a) || !Number.isFinite(b) || a >= 0) {
-    return null;
-  }
+  const d12 = (fy2 - fy1) / (t2 - t1);
+  const d23 = (fy3 - fy2) / (t3 - t2);
+  const a = (d23 - d12) / (t3 - t1);
+  const b = d12 - a * (t1 + t2);
 
-  const vertex = -b / (2 * a);
-  return Number.isFinite(vertex) ? vertex : null;
-}
+  if (!Number.isFinite(a) || !Number.isFinite(b) || a >= 0) return null;
 
-function pointByAmount(points: ProfitPoint[]): Map<string, ProfitPoint> {
-  const map = new Map<string, ProfitPoint>();
-  for (const point of points) {
-    map.set(point.amountInToken0.toString(), point);
-  }
-  return map;
+  const tVertex = -b / (2 * a);
+  if (!Number.isFinite(tVertex) || tVertex <= 0 || tVertex >= 1) return null;
+
+  const vertexRaw = Number(x1) + tVertex * span;
+  if (!Number.isFinite(vertexRaw) || vertexRaw <= 0) return null;
+
+  return BigInt(Math.floor(vertexRaw));
 }
 
 function sortedByAmount(points: ProfitPoint[]): ProfitPoint[] {
@@ -89,7 +88,10 @@ export class HybridAmountOptimizer {
     this.options = options;
   }
 
-  async optimize(evaluateProfit: (amountInToken0: bigint) => Promise<bigint | null>): Promise<HybridOptimizerResult> {
+  async optimize(
+    evaluateProfit: (amountInToken0: bigint) => Promise<bigint | null>,
+    batchEvaluateProfit?: (amounts: bigint[]) => Promise<(bigint | null)[]>
+  ): Promise<HybridOptimizerResult> {
     const startedAtMs = Date.now();
     const evaluated = new Map<string, ProfitPoint>();
     let evalCount = 0;
@@ -125,11 +127,51 @@ export class HybridAmountOptimizer {
     };
 
     const coarsePoints: ProfitPoint[] = [];
-    for (const ratioBps of this.options.coarseRatiosBps) {
-      const amount = (this.options.maxAmountToken0 * BigInt(ratioBps)) / BPS_DENOMINATOR;
-      const point = await evalAt(amount);
-      if (point) {
-        coarsePoints.push(point);
+
+    if (batchEvaluateProfit) {
+      const coarseAmounts = this.options.coarseRatiosBps.map(
+        (ratioBps) => clampBigInt(
+          (this.options.maxAmountToken0 * BigInt(ratioBps)) / BPS_DENOMINATOR,
+          this.options.minAmountToken0,
+          this.options.maxAmountToken0
+        )
+      );
+
+      const uniqueAmounts: bigint[] = [];
+      const uniqueKeys = new Set<string>();
+      for (const amount of coarseAmounts) {
+        const key = amount.toString();
+        if (!uniqueKeys.has(key)) {
+          uniqueKeys.add(key);
+          uniqueAmounts.push(amount);
+        }
+      }
+
+      evalCount += uniqueAmounts.length;
+      if (evalCount > this.options.maxQuoteEvaluations) {
+        budgetExhausted = true;
+        evalCount = this.options.maxQuoteEvaluations;
+      }
+
+      const batchResults = await batchEvaluateProfit(uniqueAmounts);
+      for (let i = 0; i < uniqueAmounts.length; i++) {
+        const profit = batchResults[i];
+        if (profit !== null) {
+          const point: ProfitPoint = { amountInToken0: uniqueAmounts[i], profitToken0: profit };
+          evaluated.set(uniqueAmounts[i].toString(), point);
+          coarsePoints.push(point);
+        }
+      }
+
+      const deduped = coarseAmounts.length - uniqueAmounts.length;
+      cacheHits += deduped;
+    } else {
+      for (const ratioBps of this.options.coarseRatiosBps) {
+        const amount = (this.options.maxAmountToken0 * BigInt(ratioBps)) / BPS_DENOMINATOR;
+        const point = await evalAt(amount);
+        if (point) {
+          coarsePoints.push(point);
+        }
       }
     }
 
@@ -156,28 +198,45 @@ export class HybridAmountOptimizer {
 
     let best = coarsePoints.reduce((acc, cur) => (cur.profitToken0 > acc.profitToken0 ? cur : acc));
 
-    const byAmount = pointByAmount(coarsePoints);
     const ordered = sortedByAmount(coarsePoints);
     const bestIndex = ordered.findIndex((p) => p.amountInToken0 === best.amountInToken0);
 
+    if (best.profitToken0 <= 0n) {
+      const finishedAtMs = Date.now();
+      return {
+        bestPoint: best,
+        metrics: {
+          startedAtMs,
+          finishedAtMs,
+          durationMs: finishedAtMs - startedAtMs,
+          evaluationCount: evalCount,
+          cacheHits,
+          coarsePointCount: coarsePoints.length,
+          parabolicTried,
+          parabolicAccepted,
+          refineIterationsExecuted,
+          budgetExhausted,
+          bestAmountToken0: best.amountInToken0,
+          bestProfitToken0: best.profitToken0,
+        },
+      };
+    }
+
     if (bestIndex > 0 && bestIndex < ordered.length - 1) {
-      const left = ordered[bestIndex - 1];
+      const leftNeighbor = ordered[bestIndex - 1];
       const center = ordered[bestIndex];
-      const right = ordered[bestIndex + 1];
+      const rightNeighbor = ordered[bestIndex + 1];
       parabolicTried = true;
 
-      const vertex = solveParabolicVertex(
-        toTokenFloat(left.amountInToken0),
-        toTokenFloat(left.profitToken0),
-        toTokenFloat(center.amountInToken0),
-        toTokenFloat(center.profitToken0),
-        toTokenFloat(right.amountInToken0),
-        toTokenFloat(right.profitToken0)
+      const vertexAmount = solveParabolicVertexNormalized(
+        leftNeighbor.amountInToken0, leftNeighbor.profitToken0,
+        center.amountInToken0, center.profitToken0,
+        rightNeighbor.amountInToken0, rightNeighbor.profitToken0,
       );
 
-      if (vertex !== null) {
-        const vertexAmount = clampBigInt(fromTokenFloat(vertex), this.options.minAmountToken0, this.options.maxAmountToken0);
-        const vertexPoint = await evalAt(vertexAmount);
+      if (vertexAmount !== null) {
+        const clamped = clampBigInt(vertexAmount, this.options.minAmountToken0, this.options.maxAmountToken0);
+        const vertexPoint = await evalAt(clamped);
         if (vertexPoint && vertexPoint.profitToken0 > best.profitToken0) {
           best = vertexPoint;
           parabolicAccepted = true;
@@ -185,21 +244,19 @@ export class HybridAmountOptimizer {
       }
     }
 
-    let left = clampBigInt(best.amountInToken0 / 2n, this.options.minAmountToken0, this.options.maxAmountToken0);
-    let right = clampBigInt((best.amountInToken0 * 2n), this.options.minAmountToken0, this.options.maxAmountToken0);
+    let left = bestIndex > 0
+      ? ordered[bestIndex - 1].amountInToken0
+      : this.options.minAmountToken0;
+    let right = bestIndex < ordered.length - 1
+      ? ordered[bestIndex + 1].amountInToken0
+      : this.options.maxAmountToken0;
     if (left >= right) {
       left = this.options.minAmountToken0;
       right = this.options.maxAmountToken0;
     }
 
-    const leftKnown = byAmount.get(left.toString()) ?? (await evalAt(left));
-    const rightKnown = byAmount.get(right.toString()) ?? (await evalAt(right));
-    if (leftKnown && leftKnown.profitToken0 > best.profitToken0) {
-      best = leftKnown;
-    }
-    if (rightKnown && rightKnown.profitToken0 > best.profitToken0) {
-      best = rightKnown;
-    }
+    let gssC: ProfitPoint | null = null;
+    let gssD: ProfitPoint | null = null;
 
     for (let i = 0; i < this.options.refineIterations; i += 1) {
       refineIterationsExecuted += 1;
@@ -208,35 +265,40 @@ export class HybridAmountOptimizer {
       }
 
       const span = right - left;
-      const x1 = left + (span * GOLDEN_LOWER_BPS) / BPS_DENOMINATOR;
-      const x2 = left + (span * GOLDEN_UPPER_BPS) / BPS_DENOMINATOR;
+      const cAmount = left + (span * GOLDEN_LOWER_BPS) / BPS_DENOMINATOR;
+      const dAmount = left + (span * GOLDEN_UPPER_BPS) / BPS_DENOMINATOR;
 
-      const p1 = await evalAt(x1);
-      const p2 = await evalAt(x2);
-      if (!p1 && !p2) {
+      if (i === 0) {
+        gssC = await evalAt(cAmount);
+        gssD = await evalAt(dAmount);
+      } else if (gssC && !gssD) {
+        gssD = await evalAt(dAmount);
+      } else if (gssD && !gssC) {
+        gssC = await evalAt(cAmount);
+      }
+
+      if (!gssC && !gssD) {
         break;
       }
 
-      if (p1 && p1.profitToken0 > best.profitToken0) {
-        best = p1;
+      if (gssC && gssC.profitToken0 > best.profitToken0) {
+        best = gssC;
       }
-      if (p2 && p2.profitToken0 > best.profitToken0) {
-        best = p2;
-      }
-
-      if (!p1) {
-        left = x1;
-        continue;
-      }
-      if (!p2) {
-        right = x2;
-        continue;
+      if (gssD && gssD.profitToken0 > best.profitToken0) {
+        best = gssD;
       }
 
-      if (p1.profitToken0 < p2.profitToken0) {
-        left = x1;
+      const cProfit = gssC?.profitToken0 ?? -(1n << 128n);
+      const dProfit = gssD?.profitToken0 ?? -(1n << 128n);
+
+      if (cProfit < dProfit) {
+        left = gssC?.amountInToken0 ?? cAmount;
+        gssC = gssD;
+        gssD = null;
       } else {
-        right = x2;
+        right = gssD?.amountInToken0 ?? dAmount;
+        gssD = gssC;
+        gssC = null;
       }
     }
 

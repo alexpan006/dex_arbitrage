@@ -85,4 +85,20 @@ export class QuoterService {
       return { amountOut: parseAmountOut(raw) };
     }
   }
+
+  async batchQuoteExactInputSingle(requests: QuoteRequest[]): Promise<(QuoteResult | null)[]> {
+    if (requests.length === 0) {
+      return [];
+    }
+
+    return Promise.all(
+      requests.map(async (req) => {
+        try {
+          return await this.quoteExactInputSingle(req);
+        } catch {
+          return null;
+        }
+      })
+    );
+  }
 }

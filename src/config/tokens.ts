@@ -28,3 +28,23 @@ export const TOKENS: Record<string, TokenInfo> = {
 };
 
 export const BASE_TOKENS = [TOKENS.WBNB, TOKENS.USDT, TOKENS.USDC];
+
+/** Address (lowercased) → decimals */
+const DECIMALS_BY_ADDRESS = new Map<string, number>(
+  Object.values(TOKENS).map((t) => [t.address.toLowerCase(), t.decimals])
+);
+
+/** Set of stablecoin addresses (lowercased) that can be treated as ~$1 */
+const STABLECOIN_ADDRESSES = new Set<string>(
+  [TOKENS.USDT, TOKENS.USDC].map((t) => t.address.toLowerCase())
+);
+
+/** Returns the decimals for a known token, or defaults to 18. */
+export function getTokenDecimals(address: string): number {
+  return DECIMALS_BY_ADDRESS.get(address.toLowerCase()) ?? 18;
+}
+
+/** Returns true if the token address is a known USD stablecoin. */
+export function isStablecoin(address: string): boolean {
+  return STABLECOIN_ADDRESSES.has(address.toLowerCase());
+}

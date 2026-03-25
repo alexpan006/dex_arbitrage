@@ -16,7 +16,12 @@ contract FlashSwapArbitrage is IUniswapV3SwapCallback, IPancakeV3SwapCallback {
     bytes32 public immutable pancakeV3InitCodeHash;
     bool public paused;
 
-    uint256 public constant MAX_BORROW_AMOUNT = 100 ether;
+    uint256 public maxBorrowAmount;
+
+    event MaxBorrowAmountUpdated(uint256 previousAmount, uint256 newAmount);
+
+    error TokenTransferFailed(address token, address to, uint256 amount);
+    error EtherTransferFailed(address to, uint256 amount);
 
     enum DexType { UniswapV3, PancakeSwapV3 }
 
@@ -62,19 +67,23 @@ contract FlashSwapArbitrage is IUniswapV3SwapCallback, IPancakeV3SwapCallback {
         address _uniswapV3Factory,
         address _pancakeV3Deployer,
         bytes32 _uniswapV3InitCodeHash,
-        bytes32 _pancakeV3InitCodeHash
+        bytes32 _pancakeV3InitCodeHash,
+        uint256 _initialMaxBorrowAmount
     ) {
+        require(_initialMaxBorrowAmount > 0, "INVALID_MAX_BORROW");
+
         owner = msg.sender;
         uniswapV3Factory = _uniswapV3Factory;
         pancakeV3Deployer = _pancakeV3Deployer;
         uniswapV3InitCodeHash = _uniswapV3InitCodeHash;
         pancakeV3InitCodeHash = _pancakeV3InitCodeHash;
+        maxBorrowAmount = _initialMaxBorrowAmount;
     }
 
     function executeArbitrage(ArbParams calldata params) external onlyOwner whenNotPaused {
         require(
             params.amountSpecified > 0 &&
-            uint256(params.amountSpecified) <= MAX_BORROW_AMOUNT,
+            uint256(params.amountSpecified) <= maxBorrowAmount,
             "INVALID_AMOUNT"
         );
 
@@ -185,10 +194,10 @@ contract FlashSwapArbitrage is IUniswapV3SwapCallback, IPancakeV3SwapCallback {
         );
 
         if (amount0Delta > 0) {
-            IERC20(repayData.token0).transfer(msg.sender, uint256(amount0Delta));
+            _safeTransfer(repayData.token0, msg.sender, uint256(amount0Delta));
         }
         if (amount1Delta > 0) {
-            IERC20(repayData.token1).transfer(msg.sender, uint256(amount1Delta));
+            _safeTransfer(repayData.token1, msg.sender, uint256(amount1Delta));
         }
     }
 
@@ -272,7 +281,7 @@ contract FlashSwapArbitrage is IUniswapV3SwapCallback, IPancakeV3SwapCallback {
         uint256 profit = arbOutput - amountOwed;
         require(profit >= cbData.amountOutMin, "BELOW_MIN_PROFIT");
 
-        IERC20(tokenOwed).transfer(msg.sender, amountOwed);
+        _safeTransfer(tokenOwed, msg.sender, amountOwed);
     }
 
     function _resolveDeltas(
@@ -306,13 +315,20 @@ contract FlashSwapArbitrage is IUniswapV3SwapCallback, IPancakeV3SwapCallback {
     }
 
     function withdrawToken(address token, uint256 amount) external onlyOwner {
-        IERC20(token).transfer(owner, amount);
+        _safeTransfer(token, owner, amount);
     }
 
     function withdrawAllToken(address token) external onlyOwner {
         uint256 balance = IERC20(token).balanceOf(address(this));
         if (balance > 0) {
-            IERC20(token).transfer(owner, balance);
+            _safeTransfer(token, owner, balance);
+        }
+    }
+
+    function withdrawBNB(uint256 amount) external onlyOwner {
+        (bool success, ) = owner.call{value: amount}("");
+        if (!success) {
+            revert EtherTransferFailed(owner, amount);
         }
     }
 
@@ -322,6 +338,23 @@ contract FlashSwapArbitrage is IUniswapV3SwapCallback, IPancakeV3SwapCallback {
 
     function unpause() external onlyOwner {
         paused = false;
+    }
+
+    function setMaxBorrowAmount(uint256 newMaxBorrowAmount) external onlyOwner {
+        require(newMaxBorrowAmount > 0, "INVALID_MAX_BORROW");
+        uint256 previousAmount = maxBorrowAmount;
+        maxBorrowAmount = newMaxBorrowAmount;
+        emit MaxBorrowAmountUpdated(previousAmount, newMaxBorrowAmount);
+    }
+
+    function _safeTransfer(address token, address to, uint256 amount) internal {
+        (bool success, bytes memory data) = token.call(
+            abi.encodeCall(IERC20.transfer, (to, amount))
+        );
+        bool transferOk = success && (data.length == 0 || abi.decode(data, (bool)));
+        if (!transferOk) {
+            revert TokenTransferFailed(token, to, amount);
+        }
     }
 
     receive() external payable {}

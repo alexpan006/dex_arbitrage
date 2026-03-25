@@ -37,6 +37,15 @@ function makeFakeQuoterService(spreadToken0: bigint) {
       }
       return { amountOut: req.amountIn + spreadToken0 };
     },
+    batchQuoteExactInputSingle: async (requests: Array<{ amountIn: bigint }>) => {
+      return requests.map((req) => {
+        callCount += 1;
+        if (callCount % 2 === 1) {
+          return { amountOut: req.amountIn * 300n };
+        }
+        return { amountOut: req.amountIn + spreadToken0 };
+      });
+    },
   } as any;
 }
 
