@@ -2,11 +2,10 @@ import { Contract, JsonRpcProvider } from "ethers";
 import { PANCAKESWAP_V3, UNISWAP_V3 } from "../config/constants";
 import { Dex } from "../config/pools";
 
-const QUOTER_V2_ABI_VARIANT_A = [
-  "function quoteExactInputSingle((address tokenIn,address tokenOut,uint24 fee,uint256 amountIn,uint160 sqrtPriceLimitX96) params) external returns (uint256 amountOut,uint160 sqrtPriceX96After,uint32 initializedTicksCrossed,uint256 gasEstimate)",
-] as const;
-
-const QUOTER_V2_ABI_VARIANT_B = [
+// Both Uniswap V3 and PancakeSwap V3 QuoterV2 on BSC use the same struct layout:
+// (address tokenIn, address tokenOut, uint256 amountIn, uint24 fee, uint160 sqrtPriceLimitX96)
+// Selector: 0xc6a5026a
+const QUOTER_V2_ABI = [
   "function quoteExactInputSingle((address tokenIn,address tokenOut,uint256 amountIn,uint24 fee,uint160 sqrtPriceLimitX96) params) external returns (uint256 amountOut,uint160 sqrtPriceX96After,uint32 initializedTicksCrossed,uint256 gasEstimate)",
 ] as const;
 
@@ -43,28 +42,16 @@ export interface QuoteRequest {
 }
 
 export class QuoterService {
-  private readonly uniQuoterA: Contract;
-  private readonly uniQuoterB: Contract;
-  private readonly pcsQuoterA: Contract;
-  private readonly pcsQuoterB: Contract;
+  private readonly uniQuoter: Contract;
+  private readonly pcsQuoter: Contract;
 
   constructor(provider: JsonRpcProvider) {
-    this.uniQuoterA = new Contract(UNISWAP_V3.quoterV2, QUOTER_V2_ABI_VARIANT_A, provider);
-    this.uniQuoterB = new Contract(UNISWAP_V3.quoterV2, QUOTER_V2_ABI_VARIANT_B, provider);
-    this.pcsQuoterA = new Contract(PANCAKESWAP_V3.quoterV2, QUOTER_V2_ABI_VARIANT_A, provider);
-    this.pcsQuoterB = new Contract(PANCAKESWAP_V3.quoterV2, QUOTER_V2_ABI_VARIANT_B, provider);
+    this.uniQuoter = new Contract(UNISWAP_V3.quoterV2, QUOTER_V2_ABI, provider);
+    this.pcsQuoter = new Contract(PANCAKESWAP_V3.quoterV2, QUOTER_V2_ABI, provider);
   }
 
   async quoteExactInputSingle(req: QuoteRequest): Promise<QuoteResult> {
-    const paramsA = {
-      tokenIn: req.tokenIn,
-      tokenOut: req.tokenOut,
-      fee: req.fee,
-      amountIn: req.amountIn,
-      sqrtPriceLimitX96: req.sqrtPriceLimitX96 ?? 0n,
-    };
-
-    const paramsB = {
+    const params = {
       tokenIn: req.tokenIn,
       tokenOut: req.tokenOut,
       amountIn: req.amountIn,
@@ -72,18 +59,11 @@ export class QuoterService {
       sqrtPriceLimitX96: req.sqrtPriceLimitX96 ?? 0n,
     };
 
-    const [contractA, contractB] =
-      req.dex === Dex.UniswapV3
-        ? [this.uniQuoterA, this.uniQuoterB]
-        : [this.pcsQuoterA, this.pcsQuoterB];
+    const contract =
+      req.dex === Dex.UniswapV3 ? this.uniQuoter : this.pcsQuoter;
 
-    try {
-      const raw = await contractA.quoteExactInputSingle.staticCall(paramsA);
-      return { amountOut: parseAmountOut(raw) };
-    } catch {
-      const raw = await contractB.quoteExactInputSingle.staticCall(paramsB);
-      return { amountOut: parseAmountOut(raw) };
-    }
+    const raw = await contract.quoteExactInputSingle.staticCall(params);
+    return { amountOut: parseAmountOut(raw) };
   }
 
   async batchQuoteExactInputSingle(requests: QuoteRequest[]): Promise<(QuoteResult | null)[]> {

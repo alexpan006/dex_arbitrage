@@ -2,6 +2,24 @@
 
 All notable project changes are tracked here.
 
+## 2026-03-26
+
+### Fix: QuoterV2 ABI — Remove always-reverting Variant A
+
+#### Bug Fix
+- **Fixed `src/strategy/QuoterService.ts`** — eliminated Variant A ABI (`0xb3b11b7e`) that always reverts on BSC:
+  - Both Uniswap V3 and PancakeSwap V3 QuoterV2 only support Variant B struct layout: `(tokenIn, tokenOut, amountIn, fee, sqrtPriceLimitX96)` → selector `0xc6a5026a`
+  - Variant A struct layout `(tokenIn, tokenOut, fee, amountIn, sqrtPriceLimitX96)` → selector `0xb3b11b7e` always reverts with empty data (`0x`) on both DEXes
+  - Removed try/catch fallback pattern — direct single call now
+  - Reduced from 4 Contract instances to 2
+  - **Impact**: Halves PCS quote RPC calls (~100 detections/min × 1 wasted call each = ~100 fewer RPC calls/min)
+  - Discovered via Alchemy dashboard error analysis showing `execution reverted` on Variant A selector
+
+#### Verification Performed
+- `npx tsc --noEmit` passed
+- `npm test` passed (133 passing, 0 failing, 1 pending)
+- Live `staticCall` verified Variant B works for both DEXes (100 USDT and 15,000 USDT quotes)
+
 ## 2026-03-25
 
 ### OPT-5: Event-Driven Pool Monitoring
