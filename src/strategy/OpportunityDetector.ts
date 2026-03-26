@@ -23,7 +23,7 @@ export interface Opportunity {
 }
 
 export interface OpportunityDetectorOptions {
-  minSpreadBps: number;
+  spreadDiffBps: number;
   maxBorrowAmountUsd: number;
   minProfitThresholdUsd: number;
   maxBorrowToken0?: bigint;
@@ -42,7 +42,7 @@ interface PairBorrowBounds {
 }
 
 const DEFAULT_OPTIONS: OpportunityDetectorOptions = {
-  minSpreadBps: 2,
+  spreadDiffBps: STRATEGY.spreadDiffBps,
   maxBorrowAmountUsd: STRATEGY.maxBorrowAmountUsd,
   minProfitThresholdUsd: STRATEGY.minProfitThresholdUsd,
   coarseRatiosBps: [1500, 3500, 5500, 7500, 9000],
@@ -177,7 +177,11 @@ export class OpportunityDetector {
       const pcsPrice = sqrtPriceX96ToPriceFloat(pcs.sqrtPriceX96);
       const spreadBps = relativeDiffBps(uniPrice, pcsPrice);
 
-      if (spreadBps < this.options.minSpreadBps) {
+      // Dynamic floor: both swap fees apply (borrow pool + arb pool), convert fee tier to bps
+      const feeFloorBps = (uni.fee + pcs.fee) / 100;
+      const minSpreadBps = feeFloorBps + this.options.spreadDiffBps;
+
+      if (spreadBps < minSpreadBps) {
         this.emitPairTelemetry(spreadCheckTimestamp, blk, key, uniPrice, pcsPrice, spreadBps, false, false, "spread_below_min");
         continue;
       }

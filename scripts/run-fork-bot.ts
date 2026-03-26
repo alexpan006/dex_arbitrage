@@ -172,7 +172,7 @@ async function runDetectionLoop(
   const feed = new PriceFeed(wsProvider, httpProvider, monitoredPools);
   const detector = new OpportunityDetector(quoter, {
     maxBorrowToken0: 100n * 10n ** 18n,
-    minSpreadBps: 1,
+    spreadDiffBps: 1,
     minExpectedProfitToken0: 1n,
     minBorrowToken0: 1n * 10n ** 16n,
     coarseRatiosBps: [100, 300, 500, 1000, 2000, 3500, 5000],

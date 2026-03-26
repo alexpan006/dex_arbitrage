@@ -111,7 +111,7 @@ describe("Full Cycle Integration (no fork)", function () {
     const quoter = makeFakeQuoterService(profitPerUnit);
 
     const detector = new OpportunityDetector(quoter, {
-      minSpreadBps: 5,
+      spreadDiffBps: 5,
       maxBorrowToken0: 10n ** 18n,
       minExpectedProfitToken0: 10n ** 15n,
       minBorrowToken0: 10n ** 15n,
@@ -175,7 +175,7 @@ describe("Full Cycle Integration (no fork)", function () {
     const quoter = makeFakeQuoterService(profitPerUnit);
 
     const detector = new OpportunityDetector(quoter, {
-      minSpreadBps: 5,
+      spreadDiffBps: 5,
       maxBorrowToken0: 10n ** 18n,
       minExpectedProfitToken0: 10n ** 15n,
       minBorrowToken0: 10n ** 15n,
@@ -230,7 +230,7 @@ describe("Full Cycle Integration (no fork)", function () {
     cache.upsert(makeMeta(Dex.UniswapV3, UNI_POOL), makeDynamic(1n << 96n));
 
     const quoter = makeFakeQuoterService(10n ** 16n);
-    const detector = new OpportunityDetector(quoter, { minSpreadBps: 5 });
+    const detector = new OpportunityDetector(quoter, { spreadDiffBps: 5 });
 
     const opportunities = await detector.detect(cache.getAll());
     expect(opportunities).to.have.length(0);

@@ -27,6 +27,7 @@ export const STRATEGY = {
   minProfitThresholdUsd: parseFloat(process.env.MIN_PROFIT_THRESHOLD_USD || "0.50"),
   maxBorrowAmountUsd: parseFloat(process.env.MAX_BORROW_AMOUNT_USD || "10000"),
   maxGasPriceGwei: parseFloat(process.env.MAX_GAS_PRICE_GWEI || "10"),
+  spreadDiffBps: parseFloat(process.env.SPREAD_DIFF_BPS || "1"),
 } as const;
 
 export const BUILDER = {
