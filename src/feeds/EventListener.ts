@@ -113,6 +113,7 @@ export class EventListener {
 
   private running = false;
   private lastProcessedBlock = 0;
+  private lastEventAtMs = 0;
   private logHandler: ((log: Log) => void) | null = null;
   private monitoredAddresses: string[] = [];
 
@@ -202,6 +203,7 @@ export class EventListener {
   }
 
   private handleLog(log: Log): void {
+    this.lastEventAtMs = Date.now();
     const topic0 = log.topics[0];
     if (!topic0) return;
 
@@ -347,6 +349,11 @@ export class EventListener {
 
   getDedupCacheSize(): number {
     return this.dedup.size;
+  }
+
+  getSecondsSinceLastEvent(): number {
+    if (this.lastEventAtMs === 0) return 0;
+    return (Date.now() - this.lastEventAtMs) / 1000;
   }
 
   parseLog(log: Log): ParsedEvent | null {

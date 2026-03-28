@@ -37,6 +37,7 @@ export class PriceFeed {
   private running = false;
   private blockHandler: ((blockNumber: number) => Promise<void>) | undefined;
   private blocksSinceLastPoll = 0;
+  private lastBlockReceivedAtMs = 0;
 
   constructor(
     wsProvider: WebSocketProvider,
@@ -80,6 +81,7 @@ export class PriceFeed {
     this.blocksSinceLastPoll = 0;
     this.blockHandler = async (blockNumber: number): Promise<void> => {
       try {
+        this.lastBlockReceivedAtMs = Date.now();
         this.blocksSinceLastPoll++;
         if (this.blocksSinceLastPoll >= this.fallbackPollBlocks) {
           this.blocksSinceLastPoll = 0;
@@ -135,6 +137,11 @@ export class PriceFeed {
   getStalePools(nowMs = Date.now()): PoolState[] {
     const cutoff = nowMs - this.staleMs;
     return this.cache.getAll().filter((state) => state.updatedAtMs < cutoff);
+  }
+
+  getSecondsSinceLastBlock(): number {
+    if (this.lastBlockReceivedAtMs === 0) return 0;
+    return (Date.now() - this.lastBlockReceivedAtMs) / 1000;
   }
 
   updateSinglePool(poolAddress: string, dynamic: PoolDynamicState): PoolState | null {
