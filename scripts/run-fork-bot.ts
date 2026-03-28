@@ -101,11 +101,13 @@ async function deployContract(_provider: JsonRpcProvider, wallet: Wallet): Promi
   const artifact = JSON.parse(readFileSync(artifactPath, "utf-8"));
 
   const factory = new ContractFactory(artifact.abi, artifact.bytecode, wallet);
+  const maxBorrow = BigInt("0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"); // type(uint256).max
   const contract = await factory.deploy(
     CONSTRUCTOR_ARGS.uniswapV3Factory,
     CONSTRUCTOR_ARGS.pancakeV3Deployer,
     CONSTRUCTOR_ARGS.uniswapV3InitCodeHash,
     CONSTRUCTOR_ARGS.pancakeV3InitCodeHash,
+    maxBorrow,
     { gasPrice: 3_000_000_000n }
   );
   await contract.waitForDeployment();
