@@ -19,6 +19,7 @@ This document tracks remaining work after the current completed baseline.
 - 10-minute mainnet dry-run smoke test: ✅ Passed
 - Telemetry system: ✅ Complete (JSONL writer + per-pair/per-block records + persistent file storage)
 - Event-driven monitoring (OPT-5): ✅ Complete (feature branch `feature/event-driven-monitoring`)
+- Pluggable optimizer interface + adaptive grid: ✅ Complete
 
 ---
 
@@ -264,6 +265,47 @@ Replaces block-based polling with WebSocket log subscriptions for Swap, Mint, an
 - Start with `EVENT_DRIVEN_ENABLED=false` (default) — pure block-polling
 - Enable on paid Chainstack tier ($49/mo, 250 RPS, 20M req/month) for WSS stability
 - Monitor WSS connection stability and event delivery before disabling block-poll fallback
+
+---
+
+## Pluggable Optimizer Interface + Adaptive Grid (Completed)
+
+### Architecture changes
+- Extracted `IOptimizer` interface (`src/strategy/IOptimizer.ts`) — shared types for `ProfitPoint`, `OptimizerMetrics`, `OptimizerResult`, `OptimizerFactory`
+- `OpportunityDetector` now depends on `IOptimizer` via factory pattern — any optimizer implementing the interface can be injected without touching other code
+- `HybridAmountOptimizer` implements `IOptimizer` (backward compat preserved via type aliases)
+
+### New module
+- `src/strategy/AdaptiveGridOptimizer.ts` — log-scale grid with default ratios `[10, 50, 100, 300, 700, 1500, 3500, 6500, 9000]` bps
+  - Covers small trade sizes ($50-$500) that old linear grid missed entirely
+  - Configurable grid ratios, budget cap, min/max amounts
+  - Supports both sequential and batch evaluation
+  - Default optimizer for `OpportunityDetector`
+
+### Removed features
+- Parabolic interpolation (was in `HybridAmountOptimizer`)
+- Golden section refinement (was in `HybridAmountOptimizer`)
+- `refineIterations` option removed from `HybridAmountOptimizerOptions`
+- `optimizerParabolicAcceptedCount` removed from `DetectorRunMetrics`
+- `optimizerParabolicAcceptedRate` removed from `RollingDetectorSummary`
+
+### Files modified
+- `src/strategy/IOptimizer.ts` (new)
+- `src/strategy/AdaptiveGridOptimizer.ts` (new)
+- `src/strategy/HybridAmountOptimizer.ts` (rewritten)
+- `src/strategy/OpportunityDetector.ts` (refactored)
+- `src/monitoring/RollingDetectorMetrics.ts` (removed parabolic metrics)
+- `src/index.ts` (removed parabolic logging)
+- `scripts/run-fork-bot.ts` (removed old optimizer options)
+- `test/unit/HybridAmountOptimizer.test.ts` (rewritten)
+- `test/unit/AdaptiveGridOptimizer.test.ts` (new — 10 tests)
+- `test/unit/RollingDetectorMetrics.test.ts` (updated)
+- `test/unit/DiscordNotifier.test.ts` (updated)
+- `test/integration/fullCycle.test.ts` (updated)
+
+### Quality gates met
+- `npx tsc --noEmit` — clean (0 errors)
+- `npm run test` — **139 passing, 0 failing, 1 pending** (fork-gated)
 
 ---
 

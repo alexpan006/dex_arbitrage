@@ -2,6 +2,72 @@
 
 All notable project changes are tracked here.
 
+## 2026-03-28
+
+### Pluggable Optimizer Interface + Adaptive Grid
+
+#### Architecture
+- **Created `src/strategy/IOptimizer.ts`** — pluggable interface (`IOptimizer`, `OptimizerResult`, `OptimizerMetrics`, `ProfitPoint`, `OptimizerFactory`) allowing different optimization strategies to be swapped without rewriting OpportunityDetector or other components
+- **Refactored `src/strategy/OpportunityDetector.ts`** — depends on `IOptimizer` interface via `OptimizerFactory` pattern. Default factory creates `AdaptiveGridOptimizer`. Removed `coarseRatiosBps`, `refineIterations`, `maxQuoteEvaluations` from detector options
+- **Refactored `src/strategy/HybridAmountOptimizer.ts`** — now implements `IOptimizer`. Removed parabolic interpolation and golden section refinement. `HybridOptimizerMetrics`/`HybridOptimizerResult` are type aliases to shared interface types
+
+#### New Optimizer
+- **Created `src/strategy/AdaptiveGridOptimizer.ts`** — log-scale grid optimizer with default ratios `[10, 50, 100, 300, 700, 1500, 3500, 6500, 9000]` bps. For $100K max borrow: $100, $500, $1K, $3K, $7K, $15K, $35K, $65K, $90K. Covers small trade amounts ($50-$500) that the old linear grid (15%, 35%, 55%, 75%, 90%) completely missed
+- This is the new default optimizer used by `OpportunityDetector`
+
+#### Removed Features
+- Parabolic interpolation (1 API call, marginal improvement)
+- Golden section refinement (2-5 API calls, unnecessary precision)
+- Both layers never triggered in production because all coarse grid points showed negative profit due to thin pool liquidity
+
+#### Metrics Cleanup
+- Removed `optimizerParabolicAcceptedCount` from `DetectorRunMetrics`
+- Removed `optimizerParabolicAcceptedRate` from `RollingDetectorSummary`
+- Removed parabolic logging from `src/index.ts` and monitoring pipeline
+- Renamed `coarsePointCount` → `gridPointCount` in `OptimizerMetrics`
+
+#### Tests
+- Rewrote `test/unit/HybridAmountOptimizer.test.ts` — removed parabolic/golden section tests, updated to match new API
+- Created `test/unit/AdaptiveGridOptimizer.test.ts` — 10 tests covering grid sweep, log-scale coverage, null handling, budget exhaustion, deduplication, custom grids, batch evaluator
+- Updated `test/unit/RollingDetectorMetrics.test.ts`, `test/unit/DiscordNotifier.test.ts`, `test/integration/fullCycle.test.ts`
+
+#### Verification
+- `npx tsc --noEmit` — clean (0 errors)
+- `npm test` — **139 passing, 0 failing, 1 pending**
+
+## 2026-03-27
+
+### Fix: Timeout Hang Bug — WSS Death Recovery
+
+#### Bug Fix
+- **Root cause**: After 6h34m of stable running, a single RPC timeout killed the WSS connection silently. With no independent recovery mechanism, the bot went permanently silent — no new blocks, no events, no detections.
+- **Fixed `src/index.ts`** — three-layer resilience:
+  - Added `withTimeout()` wrapper (5s) on `fallbackProvider.getBlockNumber()` inside `triggerDetection` — prevents infinite hangs on RPC calls
+  - Added safety-net HTTP poll (15s interval) that fires **independently of WSS** — if no detection runs for 15s, it fetches the latest block via HTTP, refreshes the price feed, and triggers detection. Logs WSS health diagnostics on trigger.
+  - Tracks `lastDetectionAtMs` in `runDetection()` for safety-net gating
+  - Added `clearInterval(safetyPollTimer)` to shutdown handler
+- **Fixed `src/feeds/PriceFeed.ts`** — WSS block health tracking:
+  - Added `lastBlockReceivedAtMs` field, updated on every `"block"` event
+  - Added `getSecondsSinceLastBlock()` public method for diagnostics
+- **Fixed `src/feeds/EventListener.ts`** — WSS event health tracking:
+  - Added `lastEventAtMs` field, updated on every log event received
+  - Added `getSecondsSinceLastEvent()` public method for diagnostics
+
+#### Verification Performed
+- `npx tsc --noEmit` passed
+- `npm test` passed (133 passing, 0 failing, 1 pending)
+
+### Dynamic Per-Pair Spread Threshold
+
+#### Enhancement
+- **Modified `src/strategy/OpportunityDetector.ts`** — replaced flat `minSpreadBps: 2` with dynamic floor per pair:
+  - Formula: `minSpreadBps = (uni.fee + pcs.fee) / 100 + SPREAD_DIFF_BPS`
+  - Both swap legs charge their respective pool fee, so the floor accounts for total fee cost
+  - V3 fee tiers use identical `uint24` encoding on both DEXes (fee=500 = 5 bps)
+- **Modified `src/config/constants.ts`** — added `spreadDiffBps` to STRATEGY config (env: `SPREAD_DIFF_BPS`, default: `1`)
+- **Updated `.env.example` and `.env`** — added `SPREAD_DIFF_BPS=1`
+- **Updated `scripts/run-fork-bot.ts` and `test/integration/fullCycle.test.ts`** — renamed option to match
+
 ## 2026-03-26
 
 ### Fix: QuoterV2 ABI — Remove always-reverting Variant A
