@@ -175,9 +175,6 @@ async function runDetectionLoop(
     spreadDiffBps: 1,
     minExpectedProfitToken0: 1n,
     minBorrowToken0: 1n * 10n ** 16n,
-    coarseRatiosBps: [100, 300, 500, 1000, 2000, 3500, 5000],
-    refineIterations: 4,
-    maxQuoteEvaluations: 16,
   });
 
   let cyclesRun = 0;

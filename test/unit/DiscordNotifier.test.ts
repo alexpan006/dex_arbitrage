@@ -98,7 +98,6 @@ describe("DiscordNotifier", function () {
         avgOptimizerEvalCount: 4.0,
         avgOptimizerCacheHits: 2.0,
         optimizerBudgetExhaustedRate: 0.05,
-        optimizerParabolicAcceptedRate: 0.8,
       });
 
       expect(fetchCalls).to.have.length(1);

@@ -16,7 +16,6 @@ function makeSample(overrides: Partial<DetectorRunMetrics> = {}): DetectorRunMet
     optimizerEvalCount: 8,
     optimizerCacheHits: 3,
     optimizerBudgetExhaustedCount: 0,
-    optimizerParabolicAcceptedCount: 1,
     ...overrides,
   };
 }

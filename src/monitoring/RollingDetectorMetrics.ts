@@ -14,7 +14,6 @@ export interface RollingDetectorSummary {
   avgOptimizerEvalCount: number;
   avgOptimizerCacheHits: number;
   optimizerBudgetExhaustedRate: number;
-  optimizerParabolicAcceptedRate: number;
 }
 
 function safeAverage(total: number, count: number): number {
@@ -51,7 +50,6 @@ export class RollingDetectorMetrics {
     let totalOptimizerCacheHits = 0;
     let totalOptimizerRuns = 0;
     let totalOptimizerBudgetExhausted = 0;
-    let totalOptimizerParabolicAccepted = 0;
 
     for (const sample of this.samples) {
       totalDuration += sample.durationMs;
@@ -64,7 +62,6 @@ export class RollingDetectorMetrics {
       totalOptimizerCacheHits += sample.optimizerCacheHits;
       totalOptimizerRuns += sample.optimizerRuns;
       totalOptimizerBudgetExhausted += sample.optimizerBudgetExhaustedCount;
-      totalOptimizerParabolicAccepted += sample.optimizerParabolicAcceptedCount;
     }
 
     return {
@@ -81,7 +78,6 @@ export class RollingDetectorMetrics {
       avgOptimizerEvalCount: safeAverage(totalOptimizerEval, sampleCount),
       avgOptimizerCacheHits: safeAverage(totalOptimizerCacheHits, sampleCount),
       optimizerBudgetExhaustedRate: totalOptimizerRuns > 0 ? totalOptimizerBudgetExhausted / totalOptimizerRuns : 0,
-      optimizerParabolicAcceptedRate: totalOptimizerRuns > 0 ? totalOptimizerParabolicAccepted / totalOptimizerRuns : 0,
     };
   }
 

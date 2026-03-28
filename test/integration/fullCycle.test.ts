@@ -115,9 +115,6 @@ describe("Full Cycle Integration (no fork)", function () {
       maxBorrowToken0: 10n ** 18n,
       minExpectedProfitToken0: 10n ** 15n,
       minBorrowToken0: 10n ** 15n,
-      coarseRatiosBps: [5000],
-      refineIterations: 0,
-      maxQuoteEvaluations: 4,
     });
 
     const states = cache.getAll();
@@ -179,9 +176,6 @@ describe("Full Cycle Integration (no fork)", function () {
       maxBorrowToken0: 10n ** 18n,
       minExpectedProfitToken0: 10n ** 15n,
       minBorrowToken0: 10n ** 15n,
-      coarseRatiosBps: [5000],
-      refineIterations: 0,
-      maxQuoteEvaluations: 4,
     });
 
     const opportunities = await detector.detect(cache.getAll());

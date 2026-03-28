@@ -5,7 +5,8 @@ import { PoolState } from "../feeds/PoolStateCache";
 import { TelemetryRecord, TelemetryWriter } from "../monitoring/TelemetryWriter";
 import { createLogger } from "../utils/logger";
 import { estimateToken0Available, relativeDiffBps, sqrtPriceX96ToPriceFloat } from "../utils/math";
-import { HybridAmountOptimizer, HybridOptimizerMetrics } from "./HybridAmountOptimizer";
+import { IOptimizer, OptimizerFactory, OptimizerMetrics } from "./IOptimizer";
+import { AdaptiveGridOptimizer } from "./AdaptiveGridOptimizer";
 import { QuoterService } from "./QuoterService";
 
 const logger = createLogger("OpportunityDetector");
@@ -29,9 +30,7 @@ export interface OpportunityDetectorOptions {
   maxBorrowToken0?: bigint;
   minExpectedProfitToken0?: bigint;
   minBorrowToken0?: bigint;
-  coarseRatiosBps: number[];
-  refineIterations: number;
-  maxQuoteEvaluations: number;
+  optimizerFactory?: OptimizerFactory;
 }
 
 interface PairBorrowBounds {
@@ -41,13 +40,14 @@ interface PairBorrowBounds {
   liquidityCap?: bigint;
 }
 
+const defaultOptimizerFactory: OptimizerFactory = ({ minAmountToken0, maxAmountToken0 }) =>
+  new AdaptiveGridOptimizer({ minAmountToken0, maxAmountToken0 });
+
 const DEFAULT_OPTIONS: OpportunityDetectorOptions = {
   spreadDiffBps: STRATEGY.spreadDiffBps,
   maxBorrowAmountUsd: STRATEGY.maxBorrowAmountUsd,
   minProfitThresholdUsd: STRATEGY.minProfitThresholdUsd,
-  coarseRatiosBps: [1500, 3500, 5500, 7500, 9000],
-  refineIterations: 4,
-  maxQuoteEvaluations: 13,
+  optimizerFactory: defaultOptimizerFactory,
 };
 
 function pairKey(token0: string, token1: string, fee: number): string {
@@ -90,7 +90,6 @@ export interface DetectorRunMetrics {
   optimizerEvalCount: number;
   optimizerCacheHits: number;
   optimizerBudgetExhaustedCount: number;
-  optimizerParabolicAcceptedCount: number;
 }
 
 export class OpportunityDetector {
@@ -110,7 +109,6 @@ export class OpportunityDetector {
     optimizerEvalCount: 0,
     optimizerCacheHits: 0,
     optimizerBudgetExhaustedCount: 0,
-    optimizerParabolicAcceptedCount: 0,
   };
 
   constructor(quoter: QuoterService, options: Partial<OpportunityDetectorOptions> = {}, telemetry?: TelemetryWriter) {
@@ -134,7 +132,6 @@ export class OpportunityDetector {
     let optimizerEvalCount = 0;
     let optimizerCacheHits = 0;
     let optimizerBudgetExhaustedCount = 0;
-    let optimizerParabolicAcceptedCount = 0;
 
     const byPair = new Map<string, PoolState[]>();
 
@@ -211,9 +208,6 @@ export class OpportunityDetector {
         if (bestResult.optimizerMetrics.budgetExhausted) {
           optimizerBudgetExhaustedCount += 1;
         }
-        if (bestResult.optimizerMetrics.parabolicAccepted) {
-          optimizerParabolicAcceptedCount += 1;
-        }
         quoteRoundTripAttempts += bestResult.roundTripAttempts;
         quoteRoundTripFailures += bestResult.roundTripFailures;
 
@@ -272,7 +266,6 @@ export class OpportunityDetector {
       optimizerEvalCount,
       optimizerCacheHits,
       optimizerBudgetExhaustedCount,
-      optimizerParabolicAcceptedCount,
     };
 
     if (this.telemetry) {
@@ -413,16 +406,14 @@ export class OpportunityDetector {
     bounds: PairBorrowBounds
   ): Promise<{
     bestCandidate: CandidateQuote | null;
-    optimizerMetrics: HybridOptimizerMetrics;
+    optimizerMetrics: OptimizerMetrics;
     roundTripAttempts: number;
     roundTripFailures: number;
   }> {
-    const optimizer = new HybridAmountOptimizer({
+    const factory = this.options.optimizerFactory ?? defaultOptimizerFactory;
+    const optimizer: IOptimizer = factory({
       minAmountToken0: bounds.minBorrowToken0,
       maxAmountToken0: bounds.maxBorrowToken0,
-      coarseRatiosBps: this.options.coarseRatiosBps,
-      refineIterations: this.options.refineIterations,
-      maxQuoteEvaluations: this.options.maxQuoteEvaluations,
     });
 
     let roundTripAttempts = 0;

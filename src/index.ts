@@ -97,8 +97,10 @@ async function main(): Promise<void> {
   let lastDiscordAlertAt = 0;
   let detectionInFlight = false;
   let rerunAfterCurrent = false;
+  let lastDetectionAtMs = Date.now();
 
   async function runDetection(poolStates: PoolState[], blockNumber: number, source: string): Promise<void> {
+    lastDetectionAtMs = Date.now();
     const opportunities = await detector.detect(poolStates, blockNumber);
     const metrics = detector.getLastMetrics();
     rolling.add(metrics);
@@ -115,7 +117,6 @@ async function main(): Promise<void> {
       optimizerEvalCount: metrics.optimizerEvalCount,
       optimizerCacheHits: metrics.optimizerCacheHits,
       optimizerBudgetExhaustedCount: metrics.optimizerBudgetExhaustedCount,
-      optimizerParabolicAcceptedCount: metrics.optimizerParabolicAcceptedCount,
     });
 
     const nowMs = Date.now();
@@ -134,7 +135,6 @@ async function main(): Promise<void> {
         avgOptimizerEvalCount: summary.avgOptimizerEvalCount,
         avgOptimizerCacheHits: summary.avgOptimizerCacheHits,
         optimizerBudgetExhaustedRate: summary.optimizerBudgetExhaustedRate,
-        optimizerParabolicAcceptedRate: summary.optimizerParabolicAcceptedRate,
       });
 
       if (notifier.isEnabled() && nowMs - lastDiscordStatusAt >= MONITORING.statusIntervalMs) {
@@ -221,6 +221,16 @@ async function main(): Promise<void> {
     }
   }
 
+  function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+      promise.then(
+        (val) => { clearTimeout(timer); resolve(val); },
+        (err) => { clearTimeout(timer); reject(err); },
+      );
+    });
+  }
+
   function triggerDetection(poolStates: PoolState[], blockNumber: number, source: string): void {
     if (detectionInFlight) {
       rerunAfterCurrent = true;
@@ -234,7 +244,7 @@ async function main(): Promise<void> {
         do {
           rerunAfterCurrent = false;
           await runDetection(poolStates, nextBlock, source);
-          nextBlock = Number(await fallbackProvider.getBlockNumber());
+          nextBlock = Number(await withTimeout(fallbackProvider.getBlockNumber(), 5_000, "getBlockNumber"));
         } while (rerunAfterCurrent);
       } catch (error) {
         logger.warn("opportunity detection failed", { source, error: String(error) });
@@ -362,6 +372,31 @@ async function main(): Promise<void> {
 
   await feed.start();
 
+  // Safety-net HTTP poll: fires independently of WSS health to keep the bot alive
+  const SAFETY_POLL_INTERVAL_MS = 15_000;
+
+  const safetyPollTimer = setInterval(() => {
+    const sinceLast = Date.now() - lastDetectionAtMs;
+    if (sinceLast < SAFETY_POLL_INTERVAL_MS) {
+      return;
+    }
+
+    logger.warn("safety-net poll triggered — no detection for " + Math.round(sinceLast / 1000) + "s", {
+      secsSinceLastBlock: feed.getSecondsSinceLastBlock().toFixed(1),
+      secsSinceLastEvent: eventListener?.getSecondsSinceLastEvent().toFixed(1) ?? "n/a",
+    });
+
+    void (async () => {
+      try {
+        const block = Number(await withTimeout(fallbackProvider.getBlockNumber(), 5_000, "safetyPoll.getBlockNumber"));
+        await feed.refresh(block);
+        triggerDetection(feed.getCache().getAll(), block, "safety-poll");
+      } catch (err) {
+        logger.warn("safety-net poll failed", { error: String(err) });
+      }
+    })();
+  }, SAFETY_POLL_INTERVAL_MS);
+
   if (notifier.isEnabled()) {
     await notifier.sendStartup(discoveredPairs.length, monitoredPools.length);
   }
@@ -373,6 +408,7 @@ async function main(): Promise<void> {
 
   const shutdown = async (signal: string) => {
     logger.info("shutting down", { signal });
+    clearInterval(safetyPollTimer);
     if (eventListener) {
       await eventListener.stop();
     }
