@@ -1,6 +1,13 @@
 export enum Dex {
   UniswapV3 = "UniswapV3",
   PancakeSwapV3 = "PancakeSwapV3",
+  UniswapV4 = "UniswapV4",
+  PancakeSwapInfinity = "PancakeSwapInfinity",
+}
+
+/** Returns true if the DEX uses a singleton PoolManager (V4-style architecture). */
+export function isV4StyleDex(dex: Dex): boolean {
+  return dex === Dex.UniswapV4 || dex === Dex.PancakeSwapInfinity;
 }
 
 export interface PoolConfig {

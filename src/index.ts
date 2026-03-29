@@ -9,7 +9,8 @@ import { PrivateTxSubmitter } from "./execution/PrivateTxSubmitter";
 import { EventListener, PoolRegistryEntry } from "./feeds/EventListener";
 import { PoolDiscovery } from "./feeds/PoolDiscovery";
 import { PoolDynamicState, PoolState } from "./feeds/PoolStateCache";
-import { buildMonitoredPools, PriceFeed } from "./feeds/PriceFeed";
+import { buildMonitoredPoolsFromGroups, PriceFeed } from "./feeds/PriceFeed";
+import { V4PoolRegistry } from "./feeds/V4PoolRegistry";
 import { DiscordNotifier } from "./monitoring/DiscordNotifier";
 import { RollingDetectorMetrics } from "./monitoring/RollingDetectorMetrics";
 import { TelemetryWriter } from "./monitoring/TelemetryWriter";
@@ -64,15 +65,22 @@ async function main(): Promise<void> {
     logger.info("no PRIVATE_KEY — execution engine disabled (detect-only mode)");
   }
 
+  const V4_REGISTRY_PATH = process.env.V4_REGISTRY_PATH || "data/v4-pool-registry.json";
+  const v4Registry = new V4PoolRegistry();
+  await v4Registry.load(V4_REGISTRY_PATH);
+
   const discovery = new PoolDiscovery(fallbackProvider);
-  const quoter = new QuoterService(fallbackProvider);
+  const quoter = new QuoterService(fallbackProvider, v4Registry);
   const notifier = new DiscordNotifier();
-  const discoveredPairs = await discovery.discover();
-  if (discoveredPairs.length === 0) {
-    throw new Error("No shared Uniswap/Pancake V3 pools discovered");
+
+  const discoveredGroups = await discovery.discoverAll(v4Registry);
+  if (discoveredGroups.length === 0) {
+    throw new Error("No cross-DEX pool groups discovered");
   }
 
-  const monitoredPools = buildMonitoredPools(discoveredPairs);
+  await v4Registry.save(V4_REGISTRY_PATH);
+
+  const monitoredPools = buildMonitoredPoolsFromGroups(discoveredGroups);
   const fallbackPollBlocks = EVENT_DRIVEN.enabled ? EVENT_DRIVEN.fallbackPollBlocks : 1;
   const feed = new PriceFeed(wsProvider, fallbackProvider, monitoredPools, {
     fallbackPollBlocks,
@@ -269,7 +277,7 @@ async function main(): Promise<void> {
       const b = pool.token1.toLowerCase();
       const left = a < b ? a : b;
       const right = a < b ? b : a;
-      return `${left}:${right}:${pool.fee}`;
+      return `${left}:${right}`;
     }
 
     function scheduleDetection(pairKey: string, blockNumber: number): void {
@@ -283,7 +291,7 @@ async function main(): Promise<void> {
           const b = s.token1.toLowerCase();
           const left = a < b ? a : b;
           const right = a < b ? b : a;
-          const key = `${left}:${right}:${s.fee}`;
+          const key = `${left}:${right}`;
           return key === pairKey;
         });
 
@@ -398,12 +406,13 @@ async function main(): Promise<void> {
   }, SAFETY_POLL_INTERVAL_MS);
 
   if (notifier.isEnabled()) {
-    await notifier.sendStartup(discoveredPairs.length, monitoredPools.length);
+    await notifier.sendStartup(discoveredGroups.length, monitoredPools.length);
   }
 
   logger.info("Bot initialized. Waiting for blocks", {
-    discoveredPairs: discoveredPairs.length,
+    discoveredPairGroups: discoveredGroups.length,
     monitoredPools: monitoredPools.length,
+    v4RegistrySize: v4Registry.size(),
   });
 
   const shutdown = async (signal: string) => {

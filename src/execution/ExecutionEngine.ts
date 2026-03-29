@@ -15,10 +15,13 @@ import { createLogger } from "../utils/logger";
 const logger = createLogger("ExecutionEngine");
 
 // Matches FlashSwapArbitrage.sol DexType enum
-const DEX_TYPE = {
+// V4/Infinity placeholders — execution not yet supported for V4-style DEXes
+const DEX_TYPE: Record<Dex, number> = {
   [Dex.UniswapV3]: 0,
   [Dex.PancakeSwapV3]: 1,
-} as const;
+  [Dex.UniswapV4]: 2,
+  [Dex.PancakeSwapInfinity]: 3,
+};
 
 // Minimal ABI for FlashSwapArbitrage.executeArbitrage(ArbParams)
 const EXECUTE_ARB_ABI = [

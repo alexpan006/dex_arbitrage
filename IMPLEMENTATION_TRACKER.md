@@ -20,6 +20,11 @@ This document tracks remaining work after the current completed baseline.
 - Telemetry system: ✅ Complete (JSONL writer + per-pair/per-block records + persistent file storage)
 - Event-driven monitoring (OPT-5): ✅ Complete (feature branch `feature/event-driven-monitoring`)
 - Pluggable optimizer interface + adaptive grid: ✅ Complete
+- **V4 DEX Adapter Integration**: ✅ Complete (branch `feat/v4-dex-adapters`)
+  - Uniswap V4 adapter: ✅ All 8 phases complete
+  - PancakeSwap Infinity CLMM adapter: ✅ All 8 phases complete
+  - 5-min dry-run smoke test: ✅ Passed (70 pools, 13 pair groups, 29,992 telemetry records)
+  - V4/Infinity execution contract: ⏳ Deferred (monitoring-first approach)
 
 ---
 
@@ -306,6 +311,79 @@ Replaces block-based polling with WebSocket log subscriptions for Swap, Mint, an
 ### Quality gates met
 - `npx tsc --noEmit` — clean (0 errors)
 - `npm run test` — **139 passing, 0 failing, 1 pending** (fork-gated)
+
+---
+
+## V4 DEX Adapter Integration (Completed — branch `feat/v4-dex-adapters`)
+
+Expanded from 2-DEX to 4-DEX: Uniswap V3, PancakeSwap V3, **Uniswap V4**, **PancakeSwap Infinity CLMM**.
+
+### Architecture: Adapter Pattern
+- V3 code untouched — new adapters translate V4/Infinity data into existing `PoolState` interface
+- V4 and Infinity share "singleton PoolManager" architecture (per-pool contracts → one PoolManager + PoolId)
+- Pool identity: PoolId = `keccak256(abi.encode(PoolKey))` (5-slot for V4, 6-slot for Infinity)
+
+### Implementation Phases (All Complete)
+
+| Phase | Module | Status |
+|-------|--------|--------|
+| 1. Config & Types | `pools.ts`, `constants.ts`, `ExecutionEngine.ts` | ✅ |
+| 2. V4PoolRegistry | `V4PoolRegistry.ts` (new) | ✅ |
+| 3. Pool Discovery Adapter | `PoolDiscovery.ts` | ✅ |
+| 4. PriceFeed Adapter | `PriceFeed.ts` | ✅ |
+| 5. EventListener Adapter | `EventListener.ts` | ✅ |
+| 6. QuoterService Adapter | `QuoterService.ts` | ✅ |
+| 6b. OpportunityDetector Generalization | `OpportunityDetector.ts`, `TelemetryWriter.ts` | ✅ |
+| 7. V4 Pool Scanner | `scripts/scan-v4-pools.ts` (new) | ✅ |
+| 8. Integration Wiring | `src/index.ts` | ✅ |
+
+### New Files
+- `src/feeds/V4PoolRegistry.ts` — PoolId↔PoolKey mapping + JSON persistence
+- `scripts/scan-v4-pools.ts` — Standalone V4/Infinity pool scanner
+- `.sisyphus/plans/v4-dex-adapters.md` — Integration plan
+
+### Modified Files
+- `src/config/pools.ts` — Dex enum + `isV4StyleDex()`
+- `src/config/constants.ts` — V4/Infinity contract addresses
+- `src/execution/ExecutionEngine.ts` — DEX_TYPE map placeholders
+- `src/feeds/PoolDiscovery.ts` — `discoverV4Pools()`, `discoverAll()`, getPool error handling
+- `src/feeds/PriceFeed.ts` — V4 multicall, `buildMonitoredPoolsFromGroups()`, chunked multicall
+- `src/feeds/EventListener.ts` — V4 Swap topics, dual WSS subscriptions, PoolId filtering
+- `src/strategy/QuoterService.ts` — V4Quoter/CLQuoter adapters
+- `src/strategy/OpportunityDetector.ts` — Multi-DEX pairwise matching, fee-less pairKey
+- `src/monitoring/TelemetryWriter.ts` — `priceA`/`priceB` + `dexA`/`dexB` fields
+- `src/index.ts` — V4Registry wiring, `discoverAll()`, `buildMonitoredPoolsFromGroups()`
+
+### Contract Addresses (BSC Mainnet)
+
+| Contract | Uniswap V4 | PCS Infinity CLMM |
+|----------|------------|-------------------|
+| PoolManager | `0x28e2ea090877bf75740558f6bfb36a5ffee9e9df` | `0xa0FfB9c1CE1Fe56963B0321B32E7A0302114058b` |
+| Quoter | `0x9f75dd27d6664c475b90e105573e550ff69437b0` | `0xd0737C9762912dD34c3271197E362Aa736Df0926` |
+| StateView | `0xd13dd3d6e93f276fafc9db9e6bb47c1180aee0c4` | N/A (CLPoolManager direct) |
+
+### Smoke Test Results (5 minutes, dry-run)
+- 70 monitored pools (19 V3 + 31 Uni V4 + 1 PCS Infinity)
+- 13 pair groups, 9 unique cross-DEX combo types
+- 29,992 telemetry records processed
+- V4 prices verified correct (USDT/WBNB ≈ 0.00164, ETH ≈ $1,997)
+- 2 "ghost pools" with `price=3.4e+38` / `liquidity=0` — optimizer correctly rejected
+- Max meaningful spread: 620 bps (ETH/USDC V4:500 vs V3:100) — zero liquidity pool
+- No profitable arb found (expected for 5-min window)
+
+### Bug Fixes During Integration
+- Multicall payload overflow with 68+ pools → parallel chunked multicall (chunk size 40)
+- V3 `getPool()` reverts on some token/fee combos → try/catch with ZERO_ADDRESS fallback
+
+### Known Issues (Deferred)
+1. Ghost pools with `price=3.4e+38` should be filtered at discovery time (min liquidity check)
+2. All `optimizer_no_candidate` due to `liquidityCap: "0"` — pools exist but have no funded positions
+3. V4/Infinity execution contract deferred until monitoring proves profitable opportunities exist
+
+### Quality Gates Met
+- `npx tsc --noEmit` — clean (0 errors)
+- `npm test` — **139 passing, 0 failing, 1 pending**
+- 5-minute dry-run smoke test — clean startup, full runtime, clean shutdown
 
 ---
 

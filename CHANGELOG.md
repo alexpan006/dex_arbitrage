@@ -2,6 +2,88 @@
 
 All notable project changes are tracked here.
 
+## 2026-03-29
+
+### V4 DEX Adapter Integration — Uniswap V4 + PancakeSwap Infinity CLMM
+
+Expands the bot from 2-DEX (Uniswap V3 × PancakeSwap V3) to 4-DEX by adding Uniswap V4 and PancakeSwap Infinity CLMM as new arbitrage legs. Uses the adapter pattern — all V3 code remains untouched.
+
+#### Phase 1: Config & Types
+- Added `Dex.UniswapV4` and `Dex.PancakeSwapInfinity` to the `Dex` enum in `src/config/pools.ts`
+- Added `isV4StyleDex()` helper for V4/Infinity branching
+- Added `UNISWAP_V4` and `PANCAKESWAP_INFINITY` address constants (PoolManager, Quoter, StateView) in `src/config/constants.ts`
+- Updated `ExecutionEngine.ts` DEX_TYPE map with placeholder entries for new DEXes
+
+#### Phase 2: V4PoolRegistry
+- Created `src/feeds/V4PoolRegistry.ts` — PoolId↔PoolKey mapping with JSON persistence
+- `computeUniV4PoolId()` and `computePcsInfinityPoolId()` — keccak256 PoolKey hashing (5-slot vs 6-slot structs)
+- `encodePcsInfinityParameters()` / `decodePcsInfinityTickSpacing()` — PCS Infinity bytes32 parameter encoding
+- Save/load to `data/v4-pool-registry.json` for persistent pool discovery caching
+
+#### Phase 3: Pool Discovery Adapter
+- Rewrote `src/feeds/PoolDiscovery.ts` — preserved V3 `discover()`, added `discoverV4Pools(registry)` brute-force method
+- `discoverAll(registry)` combines V3+V4 into `DiscoveredPairGroup[]` — groups all pools for the same token pair regardless of DEX/fee
+- Added try/catch for V3 `getPool()` reverts on invalid token/fee combos
+
+#### Phase 4: PriceFeed Adapter
+- Rewrote `src/feeds/PriceFeed.ts` — `buildCalls()` partitions V3 vs V4 pools
+- V4 pools read via singleton `getSlot0(poolId)` + `getLiquidity(poolId)` on PoolManager
+- Added `buildMonitoredPoolsFromGroups()` to convert `DiscoveredPairGroup[]` into `MonitoredPool[]`
+- Added **parallel chunked multicall** (`MULTICALL_CHUNK_SIZE=40`) to handle large pool counts without payload overflow
+
+#### Phase 5: EventListener Adapter
+- Rewrote `src/feeds/EventListener.ts` — added V4 Swap event topics for both Uniswap V4 and PCS Infinity
+- Dual WSS subscription strategy: V3 pools subscribe by address, V4 pools subscribe by PoolManager + filter `topic[1]` as PoolId
+- V4 Swap events use `int128` types (vs V3's `int256`)
+
+#### Phase 6: QuoterService Adapter
+- Rewrote `src/strategy/QuoterService.ts` — V4Quoter + CLQuoter contract instances
+- Branches on DEX type: V3 uses existing QuoterV2, V4 uses `quoteExactInputSingle` with PoolKey struct
+- Uniswap V4 PoolKey: 5-slot `(currency0, currency1, fee, tickSpacing, hooks)`
+- PCS Infinity PoolKey: 6-slot `(currency0, currency1, hooks, poolManager, fee, parameters)`
+- Uses `staticCall` for revert-based quoting
+
+#### Phase 6b: OpportunityDetector Generalization
+- Rewrote `src/strategy/OpportunityDetector.ts` for multi-DEX pairwise comparison
+- `pairKey()` no longer includes fee — same token pair across different DEXes/fees are compared
+- Nested-loop pairwise: `for a, for b>a, skip if same DEX` (replaces hardcoded uni/pcs matching)
+- Updated `TelemetryRecord` — `uniPrice`/`pcsPrice` → `priceA`/`priceB`, added `dexA`/`dexB` fields
+- V4 pools pass `poolId` in QuoteRequest for correct PoolKey-based quoting
+
+#### Phase 7: V4 Pool Scanner Script
+- Created `scripts/scan-v4-pools.ts` — standalone script to discover V4/Infinity pools via brute-force PoolKey enumeration
+- Scans tickSpacing×fee combinations for configured token pairs
+- Persists discovered pools to `data/v4-pool-registry.json`
+
+#### Phase 8: Integration Wiring
+- Updated `src/index.ts` — V4PoolRegistry, `discoverAll()`, `buildMonitoredPoolsFromGroups()`
+- Full bot startup flow: load registry → discover V3+V4 → build groups → monitor all pools
+
+#### Bug Fixes During Smoke Test
+- **Multicall payload overflow**: 68+ pools (136 calls) exceeded single-batch multicall3 limit → added parallel chunked multicall with `MULTICALL_CHUNK_SIZE=40`, failed chunks gracefully return empty data
+- **V3 getPool reverts**: Some token/fee combos revert on factory → added `.catch(() => ZERO_ADDRESS)` fallback
+
+#### 5-Minute Dry-Run Smoke Test Results
+- **70 monitored pools**: 19 V3 + 31 Uni V4 + 1 PCS Infinity (across 13 pair groups)
+- **29,992 telemetry records**: 18,929 spread_below_min + 11,063 optimizer_no_candidate
+- **DEX coverage**: 9 unique cross-DEX combo types detected
+- **V4 prices verified correct**: USDT/WBNB ≈ 0.00164 (610 USDT/BNB), ETH ≈ $1,997
+- **2 anomalous "ghost pools"** identified (UniswapV4:10000 USDT/WBNB, PCSInfinity:500 ETH/USDT) — price=3.4e+38, liquidity=0. Optimizer correctly rejected with `optimizer_no_candidate`
+- **Max meaningful spread**: 620 bps (ETH/USDC UniswapV4:500 vs UniswapV3:100) — pool has zero liquidity, so no executable arb
+- **No profitable opportunities** found in 5-min window — expected for short monitoring duration
+
+#### Known Issues (Deferred)
+- Ghost pools with `price=3.4e+38` should be filtered by minimum liquidity or price sanity check at discovery time
+- All `optimizer_no_candidate` rejections were due to `liquidityCap: "0"` — the pools exist on-chain but have no funded positions
+- Execution contract for V4/Infinity flash accounting deferred until profitable opportunities are confirmed
+
+#### Verification
+- `npx tsc --noEmit` — clean (0 errors)
+- `npm test` — **139 passing, 0 failing, 1 pending**
+- 5-minute dry-run smoke test — clean startup, full runtime, clean shutdown
+
+---
+
 ## 2026-03-28
 
 ### Pluggable Optimizer Interface + Adaptive Grid

@@ -1,5 +1,5 @@
 import { STRATEGY } from "../config/constants";
-import { Dex } from "../config/pools";
+import { Dex, isV4StyleDex } from "../config/pools";
 import { getTokenDecimals, isStablecoin } from "../config/tokens";
 import { PoolState } from "../feeds/PoolStateCache";
 import { TelemetryRecord, TelemetryWriter } from "../monitoring/TelemetryWriter";
@@ -50,12 +50,12 @@ const DEFAULT_OPTIONS: OpportunityDetectorOptions = {
   optimizerFactory: defaultOptimizerFactory,
 };
 
-function pairKey(token0: string, token1: string, fee: number): string {
+function pairKey(token0: string, token1: string): string {
   const a = token0.toLowerCase();
   const b = token1.toLowerCase();
   const left = a < b ? a : b;
   const right = a < b ? b : a;
-  return `${left}:${right}:${fee}`;
+  return `${left}:${right}`;
 }
 
 function estimateMinOutToken0(expectedAmountOutToken0: bigint, expectedProfitToken0: bigint, minProfitToken0: bigint): bigint {
@@ -136,7 +136,7 @@ export class OpportunityDetector {
     const byPair = new Map<string, PoolState[]>();
 
     for (const state of states) {
-      const key = pairKey(state.token0, state.token1, state.fee);
+      const key = pairKey(state.token0, state.token1);
       const items = byPair.get(key);
       if (!items) {
         byPair.set(key, [state]);
@@ -152,8 +152,8 @@ export class OpportunityDetector {
       key: string;
       buyPool: PoolState;
       sellPool: PoolState;
-      uniPrice: number;
-      pcsPrice: number;
+      priceA: number;
+      priceB: number;
       spreadBps: number;
       bounds: PairBorrowBounds;
     }
@@ -162,33 +162,41 @@ export class OpportunityDetector {
     const spreadCheckTimestamp = new Date().toISOString();
 
     for (const [key, pairStates] of byPair) {
-      pairsScanned += 1;
-      const uni = pairStates.find((s) => s.dex === Dex.UniswapV3);
-      const pcs = pairStates.find((s) => s.dex === Dex.PancakeSwapV3);
+      for (let a = 0; a < pairStates.length; a++) {
+        for (let b = a + 1; b < pairStates.length; b++) {
+          const poolA = pairStates[a];
+          const poolB = pairStates[b];
 
-      if (!uni || !pcs) {
-        continue;
+          if (poolA.dex === poolB.dex) {
+            continue;
+          }
+
+          pairsScanned += 1;
+
+          const priceA = sqrtPriceX96ToPriceFloat(poolA.sqrtPriceX96);
+          const priceB = sqrtPriceX96ToPriceFloat(poolB.sqrtPriceX96);
+          const spreadBps = relativeDiffBps(priceA, priceB);
+
+          const feeFloorBps = (poolA.fee + poolB.fee) / 100;
+          const minSpreadBps = feeFloorBps + this.options.spreadDiffBps;
+
+          const pairLabel = `${key}|${poolA.dex}:${poolA.fee}-${poolB.dex}:${poolB.fee}`;
+
+          if (spreadBps < minSpreadBps) {
+            this.emitPairTelemetry(spreadCheckTimestamp, blk, pairLabel, poolA.dex, poolB.dex, priceA, priceB, spreadBps, false, false, "spread_below_min");
+            continue;
+          }
+          pairsWithSpread += 1;
+
+          const buyPool = priceA < priceB ? poolB : poolA;
+          const sellPool = priceA < priceB ? poolA : poolB;
+          const buyPrice = priceA < priceB ? priceB : priceA;
+          const sellPrice = priceA < priceB ? priceA : priceB;
+          const bounds = this.computePairBorrowBounds(buyPool, sellPool, buyPrice, sellPrice);
+
+          qualifiedPairs.push({ key: pairLabel, buyPool, sellPool, priceA: buyPrice, priceB: sellPrice, spreadBps, bounds });
+        }
       }
-
-      const uniPrice = sqrtPriceX96ToPriceFloat(uni.sqrtPriceX96);
-      const pcsPrice = sqrtPriceX96ToPriceFloat(pcs.sqrtPriceX96);
-      const spreadBps = relativeDiffBps(uniPrice, pcsPrice);
-
-      // Dynamic floor: both swap fees apply (borrow pool + arb pool), convert fee tier to bps
-      const feeFloorBps = (uni.fee + pcs.fee) / 100;
-      const minSpreadBps = feeFloorBps + this.options.spreadDiffBps;
-
-      if (spreadBps < minSpreadBps) {
-        this.emitPairTelemetry(spreadCheckTimestamp, blk, key, uniPrice, pcsPrice, spreadBps, false, false, "spread_below_min");
-        continue;
-      }
-      pairsWithSpread += 1;
-
-      const buyPool = uniPrice < pcsPrice ? pcs : uni;
-      const sellPool = uniPrice < pcsPrice ? uni : pcs;
-      const bounds = this.computePairBorrowBounds(buyPool, sellPool, uniPrice, pcsPrice);
-
-      qualifiedPairs.push({ key, buyPool, sellPool, uniPrice, pcsPrice, spreadBps, bounds });
     }
 
     // Phase B: Quote all qualified pairs in parallel (OPT-2)
@@ -213,16 +221,16 @@ export class OpportunityDetector {
 
         const best = bestResult.bestCandidate;
         if (!best) {
-          this.emitPairTelemetry(now, blk, qp.key, qp.uniPrice, qp.pcsPrice, qp.spreadBps, true, true, "optimizer_no_candidate", undefined, undefined, qp.bounds);
+          this.emitPairTelemetry(now, blk, qp.key, qp.buyPool.dex, qp.sellPool.dex, qp.priceA, qp.priceB, qp.spreadBps, true, true, "optimizer_no_candidate", undefined, undefined, qp.bounds);
           continue;
         }
 
         if (best.profitToken0 < qp.bounds.minExpectedProfitToken0) {
-          this.emitPairTelemetry(now, blk, qp.key, qp.uniPrice, qp.pcsPrice, qp.spreadBps, true, true, "profit_below_min", best, qp.bounds.minExpectedProfitToken0, qp.bounds);
+          this.emitPairTelemetry(now, blk, qp.key, qp.buyPool.dex, qp.sellPool.dex, qp.priceA, qp.priceB, qp.spreadBps, true, true, "profit_below_min", best, qp.bounds.minExpectedProfitToken0, qp.bounds);
           continue;
         }
 
-        this.emitPairTelemetry(now, blk, qp.key, qp.uniPrice, qp.pcsPrice, qp.spreadBps, true, true, "accepted", best, qp.bounds.minExpectedProfitToken0, qp.bounds);
+        this.emitPairTelemetry(now, blk, qp.key, qp.buyPool.dex, qp.sellPool.dex, qp.priceA, qp.priceB, qp.spreadBps, true, true, "accepted", best, qp.bounds.minExpectedProfitToken0, qp.bounds);
 
         const amountOutMinToken0 = estimateMinOutToken0(best.amountBackToken0, best.profitToken0, qp.bounds.minExpectedProfitToken0);
 
@@ -288,8 +296,10 @@ export class OpportunityDetector {
     timestamp: string,
     blockNumber: number,
     pair: string,
-    uniPrice: number,
-    pcsPrice: number,
+    dexA: Dex,
+    dexB: Dex,
+    priceA: number,
+    priceB: number,
     spreadBps: number,
     spreadAboveThreshold: boolean,
     quoteAttempted: boolean,
@@ -304,8 +314,10 @@ export class OpportunityDetector {
       timestamp,
       blockNumber,
       pair,
-      uniPrice,
-      pcsPrice,
+      dexA,
+      dexB,
+      priceA,
+      priceB,
       spreadBps,
       spreadAboveThreshold,
       quoteAttempted,
@@ -473,6 +485,7 @@ export class OpportunityDetector {
         tokenOut: buyPool.token1,
         fee: buyPool.fee,
         amountIn: amountInToken0,
+        poolId: isV4StyleDex(buyPool.dex) ? buyPool.poolAddress : undefined,
       });
 
       if (firstLeg.amountOut <= 0n) {
@@ -485,6 +498,7 @@ export class OpportunityDetector {
         tokenOut: sellPool.token0,
         fee: sellPool.fee,
         amountIn: firstLeg.amountOut,
+        poolId: isV4StyleDex(sellPool.dex) ? sellPool.poolAddress : undefined,
       });
 
       const profitToken0 = secondLeg.amountOut - amountInToken0;
@@ -511,12 +525,16 @@ export class OpportunityDetector {
     sellPool: PoolState,
     amounts: bigint[]
   ): Promise<(bigint | null)[]> {
+    const buyPoolId = isV4StyleDex(buyPool.dex) ? buyPool.poolAddress : undefined;
+    const sellPoolId = isV4StyleDex(sellPool.dex) ? sellPool.poolAddress : undefined;
+
     const leg1Requests = amounts.map((amountIn) => ({
       dex: buyPool.dex,
       tokenIn: buyPool.token0,
       tokenOut: buyPool.token1,
       fee: buyPool.fee,
       amountIn,
+      poolId: buyPoolId,
     }));
 
     const leg1Results = await this.quoter.batchQuoteExactInputSingle(leg1Requests);
@@ -529,6 +547,7 @@ export class OpportunityDetector {
         tokenOut: sellPool.token0,
         fee: sellPool.fee,
         amountIn: r.amountOut,
+        poolId: sellPoolId,
       };
     });
 

@@ -18,6 +18,18 @@ export const PANCAKESWAP_V3 = {
   initCodeHash: "0x6ce8eb472fa82df5469c6ab6d485f17c3ad13c8cd7af59b3d4a8026c5ce0f7e2",
 } as const;
 
+export const UNISWAP_V4 = {
+  poolManager: "0x28e2ea090877bf75740558f6bfb36a5ffee9e9df",
+  stateView: "0xd13dd3d6e93f276fafc9db9e6bb47c1180aee0c4",
+  quoter: "0x9f75dd27d6664c475b90e105573e550ff69437b0",
+} as const;
+
+export const PANCAKESWAP_INFINITY = {
+  vault: "0x238a358808379702088667322f80aC48bAd5e6c4",
+  clPoolManager: "0xa0FfB9c1CE1Fe56963B0321B32E7A0302114058b",
+  clQuoter: "0xd0737C9762912dD34c3271197E362Aa736Df0926",
+} as const;
+
 export const INIT_CODE_HASHES = {
   uniswapV3: "0xe34f199b19b2b4f47f68442619d555527d244f78a3297ea89325f843f87b8b54",
   pancakeSwapV3: "0x6ce8eb472fa82df5469c6ab6d485f17c3ad13c8cd7af59b3d4a8026c5ce0f7e2",

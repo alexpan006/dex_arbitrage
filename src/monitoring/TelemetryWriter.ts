@@ -8,8 +8,10 @@ export interface TelemetryRecord {
   timestamp: string;
   blockNumber: number;
   pair: string;
-  uniPrice: number;
-  pcsPrice: number;
+  dexA: string;
+  dexB: string;
+  priceA: number;
+  priceB: number;
   spreadBps: number;
   spreadAboveThreshold: boolean;
   quoteAttempted: boolean;
