@@ -17,19 +17,20 @@
     "clean": "hardhat clean && rm -rf dist"
   },
   "dependencies": {
-    "ethers": "^6.14.0",
-    "dotenv": "^16.4.7",
-    "@uniswap/v3-sdk": "^3.29.1",
+    "@ethersproject/abi": "^5.7.0",
+    "@playwright/test": "^1.58.2",
     "@uniswap/sdk-core": "^7.12.1",
-    "@ethersproject/abi": "^5.7.0"
+    "@uniswap/v3-sdk": "^3.29.1",
+    "dotenv": "^16.4.7",
+    "ethers": "^6.14.0"
   },
   "devDependencies": {
-    "hardhat": "^2.22.0",
     "@nomicfoundation/hardhat-toolbox": "^5.0.0",
-    "typescript": "^5.8.0",
-    "ts-node": "^10.9.2",
+    "@types/mocha": "^10.0.0",
     "@types/node": "^22.0.0",
-    "@types/mocha": "^10.0.0"
+    "hardhat": "^2.22.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.8.0"
   },
   "engines": {
     "node": ">=20.0.0"

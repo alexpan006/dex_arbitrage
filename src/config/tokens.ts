@@ -25,9 +25,19 @@ export const TOKENS: Record<string, TokenInfo> = {
     address: "0x2170Ed0880ac9A755fd29B2688956BD959F933F8",
     decimals: 18,
   },
+  BTCB: {
+    symbol: "BTCB",
+    address: "0x7130d2A12B9BCbFAe4f2634d864A1Ee1Ce3Ead9c",
+    decimals: 18,
+  },
+  BUSD: {
+    symbol: "BUSD",
+    address: "0xe9e7CEA3DedcA5984780Bafc599bD69ADd087D56",
+    decimals: 18,
+  },
 };
 
-export const BASE_TOKENS = [TOKENS.WBNB, TOKENS.USDT, TOKENS.USDC];
+export const BASE_TOKENS = [TOKENS.WBNB, TOKENS.USDT, TOKENS.USDC, TOKENS.BTCB];
 
 /** Address (lowercased) → decimals */
 const DECIMALS_BY_ADDRESS = new Map<string, number>(
@@ -36,7 +46,7 @@ const DECIMALS_BY_ADDRESS = new Map<string, number>(
 
 /** Set of stablecoin addresses (lowercased) that can be treated as ~$1 */
 const STABLECOIN_ADDRESSES = new Set<string>(
-  [TOKENS.USDT, TOKENS.USDC].map((t) => t.address.toLowerCase())
+  [TOKENS.USDT, TOKENS.USDC, TOKENS.BUSD].map((t) => t.address.toLowerCase())
 );
 
 /** Returns the decimals for a known token, or defaults to 18. */

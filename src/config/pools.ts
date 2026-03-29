@@ -23,7 +23,14 @@ export const FEE_TIERS = {
 
 export const INITIAL_PAIRS: Array<{ token0Symbol: string; token1Symbol: string; feeTiers: number[] }> = [
   { token0Symbol: "WBNB", token1Symbol: "USDT", feeTiers: [100, 500, 2500] },
-  { token0Symbol: "WBNB", token1Symbol: "USDC", feeTiers: [500, 2500] },
-  { token0Symbol: "ETH", token1Symbol: "USDT", feeTiers: [500, 2500] },
-  { token0Symbol: "ETH", token1Symbol: "WBNB", feeTiers: [500, 2500] },
+  { token0Symbol: "WBNB", token1Symbol: "USDC", feeTiers: [100, 500, 2500] },
+  { token0Symbol: "ETH", token1Symbol: "USDT", feeTiers: [100, 500] },
+  { token0Symbol: "ETH", token1Symbol: "WBNB", feeTiers: [500] },
+  { token0Symbol: "BTCB", token1Symbol: "WBNB", feeTiers: [500] },
+  { token0Symbol: "USDT", token1Symbol: "BTCB", feeTiers: [500] },
+  { token0Symbol: "USDT", token1Symbol: "USDC", feeTiers: [100, 500] },
+  { token0Symbol: "WBNB", token1Symbol: "BUSD", feeTiers: [100, 500] },
+  { token0Symbol: "USDT", token1Symbol: "BUSD", feeTiers: [100, 500] },
+  { token0Symbol: "ETH", token1Symbol: "USDC", feeTiers: [100, 500] },
+  { token0Symbol: "USDC", token1Symbol: "BUSD", feeTiers: [100, 500] },
 ];
